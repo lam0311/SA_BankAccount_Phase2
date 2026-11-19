@@ -51,6 +51,13 @@ class EnvironmentVariables {
   @Min(4)
   @Max(15)
   BCRYPT_ROUNDS: number = 12;
+
+  @IsString()
+  REDIS_HOST: string = 'localhost';
+
+  @Type(() => Number)
+  @IsInt()
+  REDIS_PORT: number = 6379;
 }
 
 export function validateEnv(

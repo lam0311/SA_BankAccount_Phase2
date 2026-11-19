@@ -15,15 +15,18 @@ import { AccountLookupFacade } from './infrastructure/adapters/account-lookup.fa
 import { PrismaAccountRepository } from './infrastructure/persistence/prisma-account.repository';
 import { AccountsController } from './presentation/http/accounts.controller';
 import { CloseAccountUseCase } from './application/use-cases/close-account.use-case';
+import { CachedAccountRepository } from './infrastructure/persistence/cached-account.repository';
+import { CacheModule } from '@src/infrastructure/cache/cache.module';
 
 @Module({
   controllers: [AccountsController],
   providers: [
     PrismaAccountRepository,
+    CachedAccountRepository,
 
     {
       provide: ACCOUNT_REPOSITORY,
-      useExisting: PrismaAccountRepository,
+      useExisting: CachedAccountRepository,
     },
 
     {
