@@ -1,19 +1,19 @@
 import { successResponse, errorResponse } from '@src/common/http/swagger/response.schemas';
 import { transactionResponseSchema } from './dto/money-movement-response.schema';
-import { 
-  Body, 
-  Controller, 
-  Get, 
-  HttpCode, 
-  HttpStatus, 
-  Param, 
-  Post, 
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
   Query,
-  ParseUUIDPipe 
+  ParseUUIDPipe
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags, ApiParam } from '@nestjs/swagger';
 import { Paginated } from '../../../../common/http/interceptors/response-envelope.interceptor';
-import { CurrentUser } from '../../../../common/security/decorators';
+import { CurrentUser, RateLimit } from '../../../../common/security/decorators';
 import { AccessTokenPayload } from '../../../../common/security/ports';
 import { CreateTransactionDto, TransactionTypeDto } from './dto/create-transaction.dto';
 import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto';
@@ -26,7 +26,7 @@ import { GetTransactionHistoryUseCase } from '../../application/use-cases/get-tr
 @ApiResponse(errorResponse(400, 'VALIDATION_ERROR: dữ liệu đầu vào không hợp lệ.'))
 @ApiResponse(errorResponse(500, 'INTERNAL_ERROR: lỗi nội bộ hệ thống.'))
 @ApiResponse(errorResponse(401, 'UNAUTHORIZED: thiếu hoặc không chấp nhận access token.'))
-@Controller('accounts') 
+@Controller('accounts')
 export class TransactionController {
   constructor(
     private readonly depositMoneyUseCase: DepositMoneyUseCase,
@@ -40,17 +40,18 @@ export class TransactionController {
   @ApiResponse(errorResponse(404, 'ACCOUNT_NOT_FOUND: Account not found or not owned by user'))
   @ApiResponse(errorResponse(409, 'INSUFFICIENT_FUNDS hoặc ACCOUNT_NOT_ACTIVE'))
   @ApiParam({ name: 'accountId', description: 'UUID of the bank account', format: 'uuid' })
+  @RateLimit({ tier: 'transactions', capacity: 30, windowMs: 10_000 })
   @Post(':accountId/transactions')
   @HttpCode(HttpStatus.CREATED)
   async createTransaction(
-    @Param('accountId', new ParseUUIDPipe({ version: '4' })) accountId: string,  
+    @Param('accountId', new ParseUUIDPipe({ version: '4' })) accountId: string,
     @Body() dto: CreateTransactionDto,
     @CurrentUser() user: AccessTokenPayload,
   ) {
     if (dto.type === TransactionTypeDto.CREDIT) {
       return this.depositMoneyUseCase.execute({
         accountId: accountId,
-        userId: user.sub, 
+        userId: user.sub,
         amount: dto.amount,
         description: dto.description,
       });

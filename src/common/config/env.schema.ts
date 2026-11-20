@@ -3,6 +3,7 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
   Max,
   Min,
@@ -58,6 +59,10 @@ class EnvironmentVariables {
   @Type(() => Number)
   @IsInt()
   REDIS_PORT: number = 6379;
+
+  @IsOptional()
+  @IsIn(["true", "false"])
+  RATE_LIMIT_ENABLED: string = "true";
 }
 
 export function validateEnv(

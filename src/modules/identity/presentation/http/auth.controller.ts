@@ -3,7 +3,7 @@ import { userResponseSchema, loginResponseSchema } from './dto/auth-response.sch
 // src/modules/identity/presentation/http/auth.controller.ts
 import { Body, Controller, HttpCode, HttpStatus, Post } from "@nestjs/common";
 import { ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
-import { Public } from "@src/common/security/decorators";
+import { Public, RateLimit } from "@src/common/security/decorators";
 import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
 import { RegisterUserUseCase } from "../../application/use-cases/register-user.use-case";
@@ -23,6 +23,7 @@ export class AuthController {
   @ApiResponse(successResponse(201, "Tao user thanh cong", userResponseSchema))
   @ApiResponse(errorResponse(400, "VALIDATION_ERROR: Du lieu khong hop le"))
   @ApiResponse(errorResponse(409, "EMAIL_EXISTS: Email da ton tai"))
+  @RateLimit({ tier: "auth", capacity: 5, windowMs: 60_000 })
   @Public() // BAT BUOC - thieu dong nay se bi AccessTokenGuard chan 401
   @Post("register")
   @HttpCode(HttpStatus.CREATED)
@@ -35,6 +36,7 @@ export class AuthController {
   @ApiOperation({ summary: "Dang nhap, nhan JWT access token" })
   @ApiResponse(successResponse(200, "Dang nhap thanh cong", loginResponseSchema))
   @ApiResponse(errorResponse(401, "INVALID_CREDENTIALS: Email hoac mat khau khong dung"))
+  @RateLimit({ tier: "auth", capacity: 5, windowMs: 60_000 })
   @Public()
   @Post("login")
   @HttpCode(HttpStatus.OK)

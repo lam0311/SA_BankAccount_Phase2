@@ -37,3 +37,11 @@ export class UnauthorizedError extends AppError {
     super(`Access token rejected: ${reason}`);
   }
 }
+
+export class RateLimitExceededError extends AppError {
+  readonly errorCode = "RATE_LIMIT_EXCEEDED";
+  readonly httpStatus = 429;
+  constructor(message = "Too many requests, please try again later") {
+    super(message);
+  }
+}
