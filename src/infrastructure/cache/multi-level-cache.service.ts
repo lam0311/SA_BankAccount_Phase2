@@ -98,10 +98,27 @@ export class MultiLevelCacheService implements OnModuleDestroy {
   }
 
   private matchPattern(key: string, pattern: string): boolean {
-    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-    return regex.test(key);
+    if (!pattern.includes('*')) return key === pattern;
+    const parts = pattern.split('*');
+    const prefix = parts[0];
+    const suffix = parts[parts.length - 1];
+    if (
+      key.length < prefix.length + suffix.length ||
+      !key.startsWith(prefix) ||
+      !key.endsWith(suffix)
+    ) {
+      return false;
+    }
+    let pos = prefix.length;
+    const limit = key.length - suffix.length;
+    for (let i = 1; i < parts.length - 1; i++) {
+      if (parts[i].length === 0) continue;
+      const idx = key.indexOf(parts[i], pos);
+      if (idx === -1 || idx + parts[i].length > limit) return false;
+      pos = idx + parts[i].length;
+    }
+    return true;
   }
-
   async onModuleDestroy() {
     await this.redisClient.quit();
   }

@@ -1,4 +1,4 @@
-export const PASSWORD_HASHER = "PASSWORD_HASHER";
+export const PASSWORD_HASHER = Symbol("PASSWORD_HASHER");
 
 export interface PasswordHasherPort {
   hash(plainPassword: string): Promise<string>;

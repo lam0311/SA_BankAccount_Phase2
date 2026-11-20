@@ -7,10 +7,13 @@ export class TransferMoneyDto {
   @IsNotEmpty()
   sourceAccountId!: string;
 
-  @ApiProperty({ example: '100000012345', description: 'Destination bank account number' })
-  @IsString()
-  @IsNotEmpty()
-  destinationAccountNumber!: string;
+  @ApiProperty({ pattern: '^[0-9]{10,20}$', example: '100000012345', description: 'Destination bank account number' })
+   @IsString()
+   @IsNotEmpty()
+   @Matches(/^[0-9]{10,20}$/, {
+     message: 'destinationAccountNumber must contain 10 to 20 digits',
+   })
+   destinationAccountNumber!: string;
 
   @ApiProperty({ type: String, pattern: '^[1-9]\\d*$', example: '100000', description: 'Transfer amount (positive numeric integer string)' })
   @IsNumberString()

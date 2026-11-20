@@ -34,6 +34,16 @@ interface ErrorEnvelope {
  *
  * Đăng ký 1 lần duy nhất ở main.ts: app.useGlobalFilters(new GlobalExceptionFilter());
  */
+
+// Bắt lỗi Postgres 22021 khi client lọt ký tự null byte xuống DB
+function isInvalidUtf8ByteError(exception: unknown): boolean {
+  if (!(exception instanceof Error)) return false;
+  return (
+    exception.message.includes("22021") ||
+    exception.message.includes("invalid byte sequence for encoding")
+  );
+}
+
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(GlobalExceptionFilter.name);
@@ -79,6 +89,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       return;
     }
 
+    if (isInvalidUtf8ByteError(exception)) {
+      this.logger.warn(`[${requestId}] Rejected invalid UTF-8 / null byte input`);
+      const body: ErrorEnvelope = {
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Input contains invalid characters",
+        },
+        meta: { requestId },
+      };
+      response.status(400).json(body);
+      return;
+    }
     // Lỗi không xác định (Prisma raw error, bug code...): KHÔNG trả message/stack gốc.
     const stack =
       exception instanceof Error ? exception.stack : String(exception);
@@ -90,4 +113,5 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     };
     response.status(500).json(body);
   }
+
 }

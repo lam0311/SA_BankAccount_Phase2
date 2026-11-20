@@ -14,6 +14,17 @@
  * - Object Money là immutable: mọi phép toán trả về instance MỚI, không mutate instance cũ.
  * - KHÔNG bao giờ dùng `number`/`float` để cộng trừ tiền ở bất kỳ đâu trong domain/application.
  */
+
+// Kiểm tra chuỗi chỉ chứa chữ số ASCII '0'-'9'
+function isDigitsOnly(value: string): boolean {
+  if (typeof value !== "string" || value.length === 0) return false;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
+}
+
 export class Money {
   private readonly amountMinor: bigint; // VND là đơn vị nhỏ nhất, không có minor unit phụ
 
@@ -31,7 +42,7 @@ export class Money {
     options: { allowZero?: boolean } = {},
   ): Money {
     const allowZero = options.allowZero ?? true;
-    if (!/^\d+$/.test(value)) {
+    if (!isDigitsOnly(value)) {
       throw new Error(
         `Invalid money string: "${value}". Expected a non-negative integer string.`,
       );
