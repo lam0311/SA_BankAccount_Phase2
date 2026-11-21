@@ -144,10 +144,16 @@ test('full lifecycle over HTTP: money, history, close, and replay after close', 
   const a = await open(alice, '100000');
   const b = await open(bob);
   assert.equal(a.currency, 'VND');
-  const tx = (type, amount) => http(`/accounts/${a.id}/transactions`, {
-    method: 'POST', token: alice.token, body: { type, amount }, status: 201,
+  const tx = (type, amount, key = randomUUID()) => http(`/accounts/${a.id}/transactions`, {
+    method: 'POST', token: alice.token, body: { type, amount }, headers: { 'Idempotency-Key': key }, status: 201,
   });
-  assert.equal((await tx('CREDIT', '400000')).data.balanceAfter, '500000');
+  const depositKey = randomUUID();
+  const firstDeposit = await tx('CREDIT', '400000', depositKey);
+  assert.equal(firstDeposit.data.balanceAfter, '500000');
+  const replayDeposit = await http(`/accounts/${a.id}/transactions`, {
+    method: 'POST', token: alice.token, body: { type: 'CREDIT', amount: '400000' }, headers: { 'Idempotency-Key': depositKey }, status: 200,
+  });
+  assert.deepEqual(replayDeposit.data, firstDeposit.data);
   assert.equal((await tx('DEBIT', '100000')).data.balanceAfter, '400000');
   const transfer = { sourceAccountId: a.id, destinationAccountNumber: b.accountNumber, amount: '250000' };
   const headers = { 'Idempotency-Key': randomUUID() };
@@ -202,7 +208,7 @@ test('DTO validation rejects invalid UUIDs, pagination, body types and extra fie
   await http(`/accounts/${a.id}/transactions?from=invalid`, { token: alice.token, status: 400, code: 'VALIDATION_ERROR' });
   for (const amount of ['-1', '0', '1.5', 100]) {
     await http(`/accounts/${a.id}/transactions`, { method: 'POST', token: alice.token,
-      body: { type: 'CREDIT', amount }, status: 400 });
+      headers: { 'Idempotency-Key': randomUUID() }, body: { type: 'CREDIT', amount }, status: 400 });
   }
   assert.equal((await http(`/accounts/${a.id}`, { token: alice.token })).data.currentBalance, '0');
 });

@@ -42,11 +42,11 @@ export class PrismaUnitOfWork implements UnitOfWorkPort {
         ): Promise<AccountSnapshot | null> => {
           const rows = await tx.$queryRaw<RawAccountLockRow[]>(
             Prisma.sql`
-              SELECT  
+              SELECT
                 id,
                 user_id AS "userId",
                 current_balance::text AS "currentBalance",
-                status  
+                status
               FROM bank_accounts
               WHERE id = ${accountId}
               FOR UPDATE
@@ -90,23 +90,47 @@ export class PrismaUnitOfWork implements UnitOfWorkPort {
       },
 
       transactions: {
-        create: async (
-          input: CreateTransactionEntryInput,
-        ): Promise<TransactionEntryRecord> => {
-          const record = await tx.financialTransaction.create({
-            data: {
-              accountId: input.accountId,
-              transferId: input.transferId ?? null,
-              transactionType: input.transactionType,
-              referenceType: input.referenceType,
-              amount: input.amount,
-              balanceAfter: input.balanceAfter,
-              description: input.description ?? null,
-            },
-          });
-          return record as unknown as TransactionEntryRecord;
-        },
-      },
+           findByAccountAndIdempotencyKey: async (
+             accountId: string,
+             idempotencyKey: string,
+           ): Promise<TransactionEntryRecord | null> => {
+             const record = await tx.financialTransaction.findUnique({
+               where: {
+                 uq_transaction_idempotency: {
+                   accountId,
+                   idempotencyKey,
+                 },
+               },
+             });
+             if (!record) return null;
+             return {
+               ...(record as unknown as TransactionEntryRecord),
+               amount: record.amount.toString(),
+               balanceAfter: record.balanceAfter.toString(),
+             };
+           },
+           create: async (
+             input: CreateTransactionEntryInput,
+           ): Promise<TransactionEntryRecord> => {
+             const record = await tx.financialTransaction.create({
+               data: {
+                 accountId: input.accountId,
+                 transferId: input.transferId ?? null,
+                 transactionType: input.transactionType,
+                 referenceType: input.referenceType,
+                 amount: input.amount,
+                 balanceAfter: input.balanceAfter,
+                 description: input.description ?? null,
+                 idempotencyKey: input.idempotencyKey ?? null,
+               },
+             });
+             return {
+               ...(record as unknown as TransactionEntryRecord),
+               amount: record.amount.toString(),
+               balanceAfter: record.balanceAfter.toString(),
+             };
+           },
+         },
 
       transfers: {
         findBySourceAndIdempotencyKey: async (

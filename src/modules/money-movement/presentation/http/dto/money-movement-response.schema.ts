@@ -10,6 +10,7 @@ export const transactionResponseSchema = objectSchema({
   balanceAfter: moneySchema,
   status: { type: 'string', enum: ['COMPLETED'], example: 'COMPLETED' },
   description: { type: 'string', nullable: true, example: null },
+  idempotencyKey: { type: 'string', nullable: true, example: null },
   createdAt: dateSchema,
 });
 export const transferResponseSchema = objectSchema({

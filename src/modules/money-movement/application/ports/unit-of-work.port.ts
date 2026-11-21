@@ -25,6 +25,7 @@ export interface CreateTransactionEntryInput {
   amount: string;
   balanceAfter: string;
   description?: string | null;
+  idempotencyKey?: string | null;
 }
 
 export interface TransactionEntryRecord {
@@ -38,6 +39,7 @@ export interface TransactionEntryRecord {
   status: string;
   description: string | null;
   createdAt: Date;
+  idempotencyKey: string | null;
 }
 
 export interface CreateTransferInput {
@@ -66,6 +68,11 @@ export interface TransferExecutionResult {
   isReplay: boolean;
 }
 
+export interface TransactionExecutionResult {
+  transaction: TransactionEntryRecord;
+  isReplay: boolean;
+}
+
 export interface MoneyMovementTransactionContext {
   accounts: {
     lockForUpdate(accountId: string): Promise<AccountSnapshot | null>;
@@ -74,8 +81,12 @@ export interface MoneyMovementTransactionContext {
   };
 
   transactions: {
-    create(input: CreateTransactionEntryInput): Promise<TransactionEntryRecord>;
-  };
+     findByAccountAndIdempotencyKey(
+       accountId: string,
+       idempotencyKey: string,
+     ): Promise<TransactionEntryRecord | null>;
+     create(input: CreateTransactionEntryInput): Promise<TransactionEntryRecord>;
+   };
 
   transfers: {
     findBySourceAndIdempotencyKey(

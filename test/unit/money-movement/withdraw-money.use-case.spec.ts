@@ -1,7 +1,7 @@
 import { describe, beforeEach, it, expect } from '@jest/globals';
 import { FakeUnitOfWork } from '../../helpers/fakes/fake-unit-of-work';
 import { WithdrawMoneyUseCase } from '@src/modules/money-movement/application/use-cases/withdraw-money.use-case';
-import { AccountNotFoundError, AccountClosedError, InsufficientFundsError } from '@src/modules/money-movement/domain/errors';
+import { AccountNotFoundError, AccountClosedError, InsufficientFundsError, IdempotencyKeyReusedError } from '@src/modules/money-movement/domain/errors';
 
 describe('WithdrawMoneyUseCase (Unit Tests)', () => {
   let fakeUnitOfWork: FakeUnitOfWork;
@@ -28,11 +28,12 @@ describe('WithdrawMoneyUseCase (Unit Tests)', () => {
       description: 'Withdraw test',
     });
 
-    expect(result.status).toBe('SUCCESS');
-    expect(result.transactionType).toBe('DEBIT');
-    expect(result.referenceType).toBe('CASH_WITHDRAWAL');
-    expect(result.amount).toBe('40000');
-    expect(result.balanceAfter).toBe('60000');
+    expect(result.isReplay).toBe(false);
+    expect(result.transaction.status).toBe('SUCCESS');
+    expect(result.transaction.transactionType).toBe('DEBIT');
+    expect(result.transaction.referenceType).toBe('CASH_WITHDRAWAL');
+    expect(result.transaction.amount).toBe('40000');
+    expect(result.transaction.balanceAfter).toBe('60000');
     expect(fakeUnitOfWork.accountsDb.get('ACC_1')?.currentBalance).toBe('60000');
     expect(fakeUnitOfWork.transactionsDb.size).toBe(1);
   });
@@ -44,7 +45,7 @@ describe('WithdrawMoneyUseCase (Unit Tests)', () => {
       amount: '100000',
     });
 
-    expect(result.balanceAfter).toBe('0');
+    expect(result.transaction.balanceAfter).toBe('0');
     expect(fakeUnitOfWork.accountsDb.get('ACC_1')?.currentBalance).toBe('0');
   });
 
@@ -99,5 +100,40 @@ describe('WithdrawMoneyUseCase (Unit Tests)', () => {
         amount: '0',
       }),
     ).rejects.toThrow('Amount must be greater than 0');
+  });
+
+  it('trả về kết quả cũ (isReplay=true) và không trừ tiền lại khi trùng idempotencyKey', async () => {
+    const cmd = {
+      accountId: 'ACC_1',
+      userId: 'USER_1',
+      amount: '40000',
+      idempotencyKey: 'wd-idem-key-0000001',
+    };
+    const first = await useCase.execute(cmd);
+    const second = await useCase.execute(cmd);
+
+    expect(first.isReplay).toBe(false);
+    expect(second.isReplay).toBe(true);
+    expect(second.transaction.id).toBe(first.transaction.id);
+    expect(fakeUnitOfWork.accountsDb.get('ACC_1')?.currentBalance).toBe('60000');
+    expect(fakeUnitOfWork.transactionsDb.size).toBe(1);
+  });
+
+  it('ném IdempotencyKeyReusedError khi dùng lại idempotencyKey với amount khác', async () => {
+    await useCase.execute({
+      accountId: 'ACC_1',
+      userId: 'USER_1',
+      amount: '40000',
+      idempotencyKey: 'wd-idem-key-0000002',
+    });
+
+    await expect(
+      useCase.execute({
+        accountId: 'ACC_1',
+        userId: 'USER_1',
+        amount: '50000',
+        idempotencyKey: 'wd-idem-key-0000002',
+      }),
+    ).rejects.toThrow(IdempotencyKeyReusedError);
   });
 });

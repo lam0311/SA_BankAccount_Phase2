@@ -35,6 +35,14 @@ export class FakeUnitOfWork implements UnitOfWorkPort {
           }
         },
         transactions: {
+          findByAccountAndIdempotencyKey: async (accountId, idempotencyKey) => {
+            for (const tx of this.transactionsDb.values()) {
+              if (tx.accountId === accountId && tx.idempotencyKey === idempotencyKey) {
+                return tx;
+              }
+            }
+            return null;
+          },
           create: async (input) => {
             const record: TransactionEntryRecord  = { 
               ...input, 
@@ -42,7 +50,8 @@ export class FakeUnitOfWork implements UnitOfWorkPort {
               status: 'SUCCESS', 
               createdAt: new Date(),
               transferId: input.transferId ?? null,
-              description: input.description ?? null
+              description: input.description ?? null,
+              idempotencyKey: input.idempotencyKey ?? null
             };
             this.transactionsDb.set(record.id, record);
             return record;

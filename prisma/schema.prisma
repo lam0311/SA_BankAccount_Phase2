@@ -92,12 +92,12 @@ model FinancialTransaction {
   balanceAfter    Decimal           @map("balance_after") @db.Decimal(18, 0)
   status          TransactionStatus @default(COMPLETED)
   description     String?           @db.VarChar(250)
+  idempotencyKey  String?           @map("idempotency_key") @db.VarChar(128)
   createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz
-
   account  BankAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
   transfer Transfer?   @relation(fields: [transferId], references: [id])
-
   @@unique([transferId, transactionType], name: "uq_transfer_transaction_type")
+  @@unique([accountId, idempotencyKey], name: "uq_transaction_idempotency")
   @@index([accountId, createdAt(sort: Desc), id(sort: Desc)], name: "idx_transactions_account_created")
   @@map("financial_transactions")
 }
