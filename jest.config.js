@@ -24,6 +24,8 @@ module.exports = {
         module: 'commonjs',
         target: 'ES2022',
         esModuleInterop: true,
+        resolveJsonModule: true,
+        skipLibCheck: true,
         allowSyntheticDefaultImports: true,
         experimentalDecorators: true,
         emitDecoratorMetadata: true,
