@@ -53,6 +53,34 @@ class EnvironmentVariables {
   @Max(15)
   BCRYPT_ROUNDS: number = 12;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(64)
+  BCRYPT_MAX_THREADS?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10000)
+  BCRYPT_MAX_QUEUE: number = 100;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  @Max(10000)
+  BCRYPT_HIGH_TRAFFIC_THRESHOLD: number = 10;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(60000)
+  EVENT_LOOP_MONITOR_INTERVAL_MS: number = 0;
+
   @IsString()
   REDIS_HOST: string = 'localhost';
 

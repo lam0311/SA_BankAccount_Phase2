@@ -45,3 +45,13 @@ export class RateLimitExceededError extends AppError {
     super(message);
   }
 }
+
+export class ServiceUnavailableError extends AppError {
+  readonly errorCode = "SERVICE_UNAVAILABLE";
+  readonly httpStatus = 503;
+  constructor(
+    message = "Service is temporarily overloaded, please try again later",
+  ) {
+    super(message);
+  }
+}

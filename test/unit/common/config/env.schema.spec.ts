@@ -127,4 +127,34 @@ describe('validateEnv', () => {
       expect(() => validateEnv(config)).toThrow('Invalid environment variables');
     });
   });
+
+  describe('Bcrypt Piscina & Event Loop Monitor config', () => {
+    it('dùng giá trị mặc định hợp lệ khi không truyền biến Piscina', () => {
+      const result = validateEnv(validConfig);
+      expect(result.BCRYPT_MAX_THREADS).toBeUndefined();
+      expect(result.BCRYPT_MAX_QUEUE).toBe(100);
+      expect(result.BCRYPT_HIGH_TRAFFIC_THRESHOLD).toBe(10);
+      expect(result.EVENT_LOOP_MONITOR_INTERVAL_MS).toBe(0);
+    });
+
+    it('chấp nhận giá trị tùy chỉnh hợp lệ', () => {
+      const result = validateEnv({
+        ...validConfig,
+        BCRYPT_MAX_THREADS: '3',
+        BCRYPT_MAX_QUEUE: '200',
+        BCRYPT_HIGH_TRAFFIC_THRESHOLD: '8',
+        EVENT_LOOP_MONITOR_INTERVAL_MS: '5000',
+      });
+      expect(result.BCRYPT_MAX_THREADS).toBe(3);
+      expect(result.BCRYPT_MAX_QUEUE).toBe(200);
+      expect(result.BCRYPT_HIGH_TRAFFIC_THRESHOLD).toBe(8);
+      expect(result.EVENT_LOOP_MONITOR_INTERVAL_MS).toBe(5000);
+    });
+
+    it('throw khi BCRYPT_MAX_THREADS < 1', () => {
+      expect(() =>
+        validateEnv({ ...validConfig, BCRYPT_MAX_THREADS: '0' }),
+      ).toThrow('Invalid environment variables');
+    });
+  });
 });

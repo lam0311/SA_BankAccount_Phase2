@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { APP_GUARD } from "@nestjs/core";
 import { PrismaModule } from "@src/infrastructure/prisma";
@@ -8,6 +8,8 @@ import { AccountsModule } from "@src/modules/accounts/accounts.module";
 import { MoneyMovementModule } from "@src/modules/money-movement/money-movement.module";
 import { AccessTokenGuard, RateLimiterGuard } from "@src/common/security/guards";
 import { RedisTokenBucketService } from "@src/common/security/rate-limit/redis-token-bucket.service";
+import { ConcurrencyModule } from "@src/common/concurrency";
+import { TrafficLoadMiddleware } from "@src/common/http/middleware";
 import { ObservabilityModule } from "@src/common/observability";
 import {
   validateEnv,
@@ -24,6 +26,7 @@ import {
       validate: validateEnv,
       load: [appConfig, jwtConfig, databaseConfig, redisConfig],
     }),
+    ConcurrencyModule,
     ObservabilityModule,
     CacheModule,
     PrismaModule,
@@ -32,9 +35,13 @@ import {
     MoneyMovementModule,
   ],
   providers: [
-     RedisTokenBucketService,
-     { provide: APP_GUARD, useClass: RateLimiterGuard },
-     { provide: APP_GUARD, useClass: AccessTokenGuard },
-   ],
+    RedisTokenBucketService,
+    { provide: APP_GUARD, useClass: RateLimiterGuard },
+    { provide: APP_GUARD, useClass: AccessTokenGuard },
+  ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(TrafficLoadMiddleware).forRoutes("*");
+  }
+}
