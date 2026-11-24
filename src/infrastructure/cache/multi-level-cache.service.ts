@@ -119,6 +119,31 @@ export class MultiLevelCacheService implements OnModuleDestroy {
     }
     return true;
   }
+  async ping(timeoutMs = 1500): Promise<{ ok: boolean; latencyMs: number }> {
+    const start = performance.now();
+    let timer: NodeJS.Timeout | null = null;
+    try {
+      const timeoutPromise = new Promise<string>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Redis ping timeout')),
+          timeoutMs,
+        );
+        timer.unref();
+      });
+      const pong = await Promise.race([
+        this.redisClient.ping(),
+        timeoutPromise,
+      ]);
+      const latencyMs = Number((performance.now() - start).toFixed(2));
+      return { ok: pong === 'PONG', latencyMs };
+    } catch {
+      const latencyMs = Number((performance.now() - start).toFixed(2));
+      return { ok: false, latencyMs };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async onModuleDestroy() {
     await this.redisClient.quit();
   }

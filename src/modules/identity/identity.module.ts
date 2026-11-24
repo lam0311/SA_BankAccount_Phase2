@@ -30,11 +30,12 @@ import { JwtTokenService } from "./infrastructure/security/jwt-token.service";
       inject: [USER_REPOSITORY, PASSWORD_HASHER, TOKEN_SERVICE],
     },
     { provide: USER_REPOSITORY, useClass: PrismaUserRepository },
-    { provide: PASSWORD_HASHER, useClass: BcryptPasswordHasher },
+    BcryptPasswordHasher,
+    { provide: PASSWORD_HASHER, useExisting: BcryptPasswordHasher },
     JwtTokenService,
     { provide: TOKEN_SERVICE, useExisting: JwtTokenService },
   ],
-  // export TOKEN_SERVICE de AccessTokenGuard (dang ky global o app.module.ts) inject duoc
-  exports: [TOKEN_SERVICE],
+  // export TOKEN_SERVICE cho AccessTokenGuard va BcryptPasswordHasher cho HealthModule doc metrics Piscina
+  exports: [TOKEN_SERVICE, BcryptPasswordHasher],
 })
 export class IdentityModule {}

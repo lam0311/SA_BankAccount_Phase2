@@ -44,11 +44,12 @@ describe("TrafficLoadMiddleware", () => {
     expect(trafficLoad.getActiveOtherRequests()).toBe(0);
   });
 
-  it("bỏ qua /auth/login, /auth/register và /api/docs", () => {
+  it("bỏ qua /auth/login, /auth/register, /health và /api/docs", () => {
     for (const url of [
       "/api/v1/auth/login",
       "/api/v1/auth/register",
       "/auth/login?foo=1",
+      "/api/v1/health",
       "/api/docs/index.html",
     ]) {
       const req = { originalUrl: url } as any;

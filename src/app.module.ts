@@ -6,6 +6,7 @@ import { CacheModule } from "@src/infrastructure/cache/cache.module";
 import { IdentityModule } from "@src/modules/identity/identity.module";
 import { AccountsModule } from "@src/modules/accounts/accounts.module";
 import { MoneyMovementModule } from "@src/modules/money-movement/money-movement.module";
+import { HealthModule } from "@src/modules/health/health.module";
 import { AccessTokenGuard, RateLimiterGuard } from "@src/common/security/guards";
 import { RedisTokenBucketService } from "@src/common/security/rate-limit/redis-token-bucket.service";
 import { ConcurrencyModule } from "@src/common/concurrency";
@@ -33,6 +34,7 @@ import {
     IdentityModule,
     AccountsModule,
     MoneyMovementModule,
+    HealthModule,
   ],
   providers: [
     RedisTokenBucketService,

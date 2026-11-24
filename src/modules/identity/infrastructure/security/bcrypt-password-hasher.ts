@@ -32,8 +32,10 @@ export interface BcryptPoolMetrics {
   inFlight: number;
   queued: number;
   maxThreads: number;
+  maxQueue: number;
   currentLimit: number;
   activeOtherRequests: number;
+  isDestroyed: boolean;
 }
 
 @Injectable()
@@ -110,8 +112,10 @@ export class BcryptPasswordHasher
       inFlight: this.inFlight,
       queued: this.waitQueue.length,
       maxThreads: this.maxThreads,
+      maxQueue: this.maxQueue,
       currentLimit: this.getCurrentLimit(),
       activeOtherRequests: this.trafficLoad.getActiveOtherRequests(),
+      isDestroyed: this.isDestroyed,
     };
   }
 

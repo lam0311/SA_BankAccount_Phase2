@@ -4,6 +4,7 @@ import { TrafficLoadService } from "@src/common/concurrency";
 
 const IGNORED_PATH_PATTERNS = [
   /^\/(?:api\/v1\/)?auth\/(?:login|register)\/?$/i,
+  /^\/(?:api\/v1\/)?health(?:\/.*)?$/i,
   /^\/api\/docs(?:\/.*)?$/i,
 ];
 

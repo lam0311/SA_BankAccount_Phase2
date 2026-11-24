@@ -51,7 +51,8 @@ export class ServiceUnavailableError extends AppError {
   readonly httpStatus = 503;
   constructor(
     message = "Service is temporarily overloaded, please try again later",
+    details?: ErrorDetail[],
   ) {
-    super(message);
+    super(message, details);
   }
 }
