@@ -1,5 +1,11 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "@src/infrastructure/prisma/prisma.module";
+import { PrismaService } from "@src/infrastructure/prisma/prisma.service";
+import { AccountsModule } from "@src/modules/accounts/accounts.module";
+import {
+  ACCOUNT_CACHE,
+  type AccountCachePort,
+} from "@src/modules/accounts/application/ports/account-cache.port";
 import { TransactionController } from "./presentation/http/transactions.controller";
 import { TransfersController } from "./presentation/http/transfers.controller";
 import { DepositMoneyUseCase } from "./application/use-cases/deposit-money.use-case";
@@ -12,7 +18,7 @@ import { PrismaUnitOfWork } from "./infrastructure/persistence/prisma-unit-of-wo
 import { PrismaTransactionQuery } from "./infrastructure/persistence/prisma-transaction-query";
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, AccountsModule],
   controllers: [
     TransactionController,
     TransfersController,
@@ -20,7 +26,9 @@ import { PrismaTransactionQuery } from "./infrastructure/persistence/prisma-tran
   providers: [
     {
       provide: UNIT_OF_WORK,
-      useClass: PrismaUnitOfWork,
+      useFactory: (prisma: PrismaService, accountCache: AccountCachePort) =>
+        new PrismaUnitOfWork(prisma, accountCache),
+      inject: [PrismaService, ACCOUNT_CACHE],
     },
     {
       provide: TRANSACTION_QUERY,

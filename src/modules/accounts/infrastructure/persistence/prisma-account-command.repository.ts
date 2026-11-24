@@ -8,23 +8,15 @@ import { Money } from '@src/common/domain/value-objects/money.value-object';
 import { PrismaService } from '@src/infrastructure/prisma/prisma.service';
 
 import type {
-  AccountPage,
-  AccountRepositoryPort,
+  AccountCommandRepositoryPort,
   CreateAccountInput,
-} from '../../application/ports/account.repository.port';
-import type {
-  BankAccount,
-} from '../../domain/entities/bank-account.entity';
-import type {
-  AccountStatus,
-} from '../../domain/enums/account-status';
+} from '../../application/ports/account-command.repository.port';
+import type { BankAccount } from '../../domain/entities/bank-account.entity';
 
 const MAX_NUMBER_ATTEMPTS = 5;
 
 function generateAccountNumber(): string {
-  return randomInt(0, 1_000_000_000_000)
-    .toString()
-    .padStart(12, '0');
+  return randomInt(0, 1_000_000_000_000).toString().padStart(12, '0');
 }
 
 function isAccountNumberConflict(error: unknown): boolean {
@@ -47,8 +39,8 @@ function isAccountNumberConflict(error: unknown): boolean {
 }
 
 @Injectable()
-export class PrismaAccountRepository
-  implements AccountRepositoryPort
+export class PrismaAccountCommandRepository
+  implements AccountCommandRepositoryPort
 {
   constructor(private readonly prisma: PrismaService) {}
 
@@ -57,11 +49,7 @@ export class PrismaAccountRepository
   ): Promise<BankAccount> {
     const amount = input.initialDeposit.toDecimalString();
 
-    for (
-      let attempt = 0;
-      attempt < MAX_NUMBER_ATTEMPTS;
-      attempt += 1
-    ) {
+    for (let attempt = 0; attempt < MAX_NUMBER_ATTEMPTS; attempt += 1) {
       const accountNumber = generateAccountNumber();
 
       try {
@@ -116,50 +104,6 @@ export class PrismaAccountRepository
     return record === null ? null : this.toDomain(record);
   }
 
-  async findByAccountNumber(
-    accountNumber: string,
-  ): Promise<BankAccount | null> {
-    const record = await this.prisma.bankAccount.findUnique({
-      where: { accountNumber },
-    });
-
-    return record === null ? null : this.toDomain(record);
-  }
-
-  async listByOwner(
-    userId: string,
-    options: {
-      status?: AccountStatus;
-      page: number;
-      limit: number;
-    },
-  ): Promise<AccountPage> {
-    const where: Prisma.BankAccountWhereInput = {
-      userId,
-      ...(options.status === undefined
-        ? {}
-        : { status: options.status }),
-    };
-
-    const [records, total] = await Promise.all([
-      this.prisma.bankAccount.findMany({
-        where,
-        orderBy: [
-          { createdAt: 'desc' },
-          { id: 'desc' },
-        ],
-        skip: (options.page - 1) * options.limit,
-        take: options.limit,
-      }),
-      this.prisma.bankAccount.count({ where }),
-    ]);
-
-    return {
-      items: records.map((record) => this.toDomain(record)),
-      total,
-    };
-  }
-
   async closeIfZeroBalance(id: string, userId: string): Promise<boolean> {
     const result = await this.prisma.bankAccount.updateMany({
       where: {
@@ -188,9 +132,7 @@ export class PrismaAccountRepository
       accountNumber: record.accountNumber,
       accountName: record.accountName,
       accountType: record.accountType,
-      currentBalance: Money.fromString(
-        record.currentBalance.toString(),
-      ),
+      currentBalance: Money.fromString(record.currentBalance.toString()),
       currency: record.currency,
       status: record.status,
       createdAt: record.createdAt,

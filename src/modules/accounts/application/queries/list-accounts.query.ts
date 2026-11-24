@@ -1,8 +1,6 @@
 import { ValidationError } from '@src/common/domain/errors/common.errors';
-import type {
-  AccountPage,
-  AccountRepositoryPort,
-} from '../ports/account.repository.port';
+import type { AccountQueryRepositoryPort } from '../ports/account-query.repository.port';
+import type { AccountPageReadModel } from './account.read-model';
 import {
   ACCOUNT_STATUSES,
   type AccountStatus,
@@ -14,13 +12,13 @@ export interface ListAccountsQuery {
   limit?: number;
 }
 
-export class ListAccountsUseCase {
-  constructor(private readonly accounts: AccountRepositoryPort) {}
+export class ListAccountsQueryHandler {
+  constructor(private readonly queryRepo: AccountQueryRepositoryPort) {}
 
   execute(
     currentUserId: string,
     query: ListAccountsQuery,
-  ): Promise<AccountPage> {
+  ): Promise<AccountPageReadModel> {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
@@ -51,7 +49,7 @@ export class ListAccountsUseCase {
       ]);
     }
 
-    return this.accounts.listByOwner(currentUserId, {
+    return this.queryRepo.listByOwner(currentUserId, {
       status: query.status,
       page,
       limit,

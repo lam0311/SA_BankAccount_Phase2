@@ -1,23 +1,23 @@
-import { ListAccountsUseCase } from '@src/modules/accounts/application/use-cases/list-accounts.use-case';
+import { ListAccountsQueryHandler } from '@src/modules/accounts/application/queries/list-accounts.query';
 import {
-  fakeAccountRepository,
-  makeAccount,
+  fakeAccountQueryRepository,
+  makeAccountReadModel,
 } from '../../helpers/fake-account-repository';
 
-describe('ListAccountsUseCase', () => {
+describe('ListAccountsQueryHandler (CQRS Query)', () => {
   test('chỉ yêu cầu danh sách của user hiện tại', async () => {
-    const repo = fakeAccountRepository();
-    repo.listByOwner.mockResolvedValue({
-      items: [makeAccount({ userId: 'user-A' })],
+    const queryRepo = fakeAccountQueryRepository();
+    queryRepo.listByOwner.mockResolvedValue({
+      items: [makeAccountReadModel({ userId: 'user-A' })],
       total: 1,
     });
 
-    const result = await new ListAccountsUseCase(repo).execute(
+    const result = await new ListAccountsQueryHandler(queryRepo).execute(
       'user-A',
       { status: 'ACTIVE', page: 2, limit: 10 },
     );
 
-    expect(repo.listByOwner).toHaveBeenCalledWith('user-A', {
+    expect(queryRepo.listByOwner).toHaveBeenCalledWith('user-A', {
       status: 'ACTIVE',
       page: 2,
       limit: 10,
@@ -26,18 +26,36 @@ describe('ListAccountsUseCase', () => {
   });
 
   test('dùng page 1 và limit 20 khi thiếu query', async () => {
-    const repo = fakeAccountRepository();
-    repo.listByOwner.mockResolvedValue({
+    const queryRepo = fakeAccountQueryRepository();
+    queryRepo.listByOwner.mockResolvedValue({
       items: [],
       total: 0,
     });
 
-    await new ListAccountsUseCase(repo).execute('user-A', {});
+    await new ListAccountsQueryHandler(queryRepo).execute('user-A', {});
 
-    expect(repo.listByOwner).toHaveBeenCalledWith('user-A', {
+    expect(queryRepo.listByOwner).toHaveBeenCalledWith('user-A', {
       status: undefined,
       page: 1,
       limit: 20,
     });
+  });
+
+  test('từ chối page hoặc limit ngoài biên hợp lệ', () => {
+    const queryRepo = fakeAccountQueryRepository();
+
+    expect(() =>
+      new ListAccountsQueryHandler(queryRepo).execute('user-A', {
+        page: 0,
+        limit: 20,
+      }),
+    ).toThrow();
+    expect(() =>
+      new ListAccountsQueryHandler(queryRepo).execute('user-A', {
+        page: 1,
+        limit: 101,
+      }),
+    ).toThrow();
+    expect(queryRepo.listByOwner).not.toHaveBeenCalled();
   });
 });
