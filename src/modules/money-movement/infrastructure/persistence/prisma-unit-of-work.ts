@@ -1,6 +1,10 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "@src/infrastructure/prisma";
+import type {
+  AccountCachePort,
+  InvalidateAccountCacheInput,
+} from "@src/modules/accounts/application/ports/account-cache.port";
 import {
   AccountSnapshot,
   CreateTransactionEntryInput,
@@ -11,30 +15,53 @@ import {
   UnitOfWorkPort,
 } from "../../application/ports/unit-of-work.port";
 
-
 type PrismaTx = Prisma.TransactionClient;
 
 interface RawAccountLockRow {
   id: string;
   userId: string;
+  accountNumber: string;
   currentBalance: string;
   status: "ACTIVE" | "CLOSED";
 }
 
 @Injectable()
 export class PrismaUnitOfWork implements UnitOfWorkPort {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly accountCache?: AccountCachePort,
+  ) {}
 
   async execute<T>(
     work: (ctx: MoneyMovementTransactionContext) => Promise<T>,
   ): Promise<T> {
-    return this.prisma.$transaction(async (tx) => {
-      const ctx = this.buildContext(tx);
+    const knownAccounts = new Map<string, InvalidateAccountCacheInput>();
+    const touchedAccountIds = new Set<string>();
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const ctx = this.buildContext(tx, knownAccounts, touchedAccountIds);
       return work(ctx);
     });
+
+    // Chỉ xóa cache SAU KHI transaction đã commit thành công trên PostgreSQL
+    if (this.accountCache && touchedAccountIds.size > 0) {
+      await Promise.all(
+        Array.from(touchedAccountIds).map((accountId) =>
+          this.accountCache!.invalidateAccount(
+            knownAccounts.get(accountId) ?? { id: accountId },
+          ),
+        ),
+      );
+    }
+
+    return result;
   }
 
-  private buildContext(tx: PrismaTx): MoneyMovementTransactionContext {
+  private buildContext(
+    tx: PrismaTx,
+    knownAccounts: Map<string, InvalidateAccountCacheInput>,
+    touchedAccountIds: Set<string>,
+  ): MoneyMovementTransactionContext {
     return {
       accounts: {
         lockForUpdate: async (
@@ -45,6 +72,7 @@ export class PrismaUnitOfWork implements UnitOfWorkPort {
               SELECT
                 id,
                 user_id AS "userId",
+                account_number AS "accountNumber",
                 current_balance::text AS "currentBalance",
                 status
               FROM bank_accounts
@@ -52,7 +80,15 @@ export class PrismaUnitOfWork implements UnitOfWorkPort {
               FOR UPDATE
             `,
           );
-          return rows[0] ?? null;
+          const row = rows[0] ?? null;
+          if (row) {
+            knownAccounts.set(row.id, {
+              id: row.id,
+              userId: row.userId,
+              accountNumber: row.accountNumber,
+            });
+          }
+          return row;
         },
 
         findByAccountNumber: async (
@@ -69,6 +105,11 @@ export class PrismaUnitOfWork implements UnitOfWorkPort {
             },
           });
           if (!acc) return null;
+          knownAccounts.set(acc.id, {
+            id: acc.id,
+            userId: acc.userId,
+            accountNumber: acc.accountNumber,
+          });
           return {
             id: acc.id,
             userId: acc.userId,
@@ -86,51 +127,52 @@ export class PrismaUnitOfWork implements UnitOfWorkPort {
             where: { id: accountId },
             data: { currentBalance: newBalance },
           });
+          touchedAccountIds.add(accountId);
         },
       },
 
       transactions: {
-           findByAccountAndIdempotencyKey: async (
-             accountId: string,
-             idempotencyKey: string,
-           ): Promise<TransactionEntryRecord | null> => {
-             const record = await tx.financialTransaction.findUnique({
-               where: {
-                 uq_transaction_idempotency: {
-                   accountId,
-                   idempotencyKey,
-                 },
-               },
-             });
-             if (!record) return null;
-             return {
-               ...(record as unknown as TransactionEntryRecord),
-               amount: record.amount.toString(),
-               balanceAfter: record.balanceAfter.toString(),
-             };
-           },
-           create: async (
-             input: CreateTransactionEntryInput,
-           ): Promise<TransactionEntryRecord> => {
-             const record = await tx.financialTransaction.create({
-               data: {
-                 accountId: input.accountId,
-                 transferId: input.transferId ?? null,
-                 transactionType: input.transactionType,
-                 referenceType: input.referenceType,
-                 amount: input.amount,
-                 balanceAfter: input.balanceAfter,
-                 description: input.description ?? null,
-                 idempotencyKey: input.idempotencyKey ?? null,
-               },
-             });
-             return {
-               ...(record as unknown as TransactionEntryRecord),
-               amount: record.amount.toString(),
-               balanceAfter: record.balanceAfter.toString(),
-             };
-           },
-         },
+        findByAccountAndIdempotencyKey: async (
+          accountId: string,
+          idempotencyKey: string,
+        ): Promise<TransactionEntryRecord | null> => {
+          const record = await tx.financialTransaction.findUnique({
+            where: {
+              uq_transaction_idempotency: {
+                accountId,
+                idempotencyKey,
+              },
+            },
+          });
+          if (!record) return null;
+          return {
+            ...(record as unknown as TransactionEntryRecord),
+            amount: record.amount.toString(),
+            balanceAfter: record.balanceAfter.toString(),
+          };
+        },
+        create: async (
+          input: CreateTransactionEntryInput,
+        ): Promise<TransactionEntryRecord> => {
+          const record = await tx.financialTransaction.create({
+            data: {
+              accountId: input.accountId,
+              transferId: input.transferId ?? null,
+              transactionType: input.transactionType,
+              referenceType: input.referenceType,
+              amount: input.amount,
+              balanceAfter: input.balanceAfter,
+              description: input.description ?? null,
+              idempotencyKey: input.idempotencyKey ?? null,
+            },
+          });
+          return {
+            ...(record as unknown as TransactionEntryRecord),
+            amount: record.amount.toString(),
+            balanceAfter: record.balanceAfter.toString(),
+          };
+        },
+      },
 
       transfers: {
         findBySourceAndIdempotencyKey: async (

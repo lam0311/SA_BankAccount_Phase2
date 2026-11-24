@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { ConfigType } from "@nestjs/config";
+import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import Piscina from "piscina";
@@ -8,6 +9,18 @@ import { TrafficLoadService } from "@src/common/concurrency";
 import { ServiceUnavailableError } from "@src/common/domain/errors";
 import { PasswordHasherPort } from "../../application/ports/password-hasher.port";
 import type { BcryptWorkerTask } from "./bcrypt.worker";
+
+function resolveBcryptWorkerPath(): string {
+  const adjacent = path.resolve(__dirname, "bcrypt.worker.js");
+  if (fs.existsSync(adjacent)) {
+    return adjacent;
+  }
+  const compiledInDist = path.resolve(
+    process.cwd(),
+    "dist/modules/identity/infrastructure/security/bcrypt.worker.js",
+  );
+  return fs.existsSync(compiledInDist) ? compiledInDist : adjacent;
+}
 
 interface QueuedTask<T> {
   task: BcryptWorkerTask;
@@ -40,7 +53,7 @@ export class BcryptPasswordHasher
   constructor(
     @Inject(appConfig.KEY)
     private readonly config: ConfigType<typeof appConfig>,
-    private readonly trafficLoad: TrafficLoadService,
+    private readonly trafficLoad: TrafficLoadService = new TrafficLoadService(),
   ) {
     const defaultMaxThreads = Math.max(
       1,
@@ -60,7 +73,7 @@ export class BcryptPasswordHasher
     );
 
     this.pool = new Piscina({
-      filename: path.resolve(__dirname, "bcrypt.worker.js"),
+      filename: resolveBcryptWorkerPath(),
       minThreads: 1,
       maxThreads: this.maxThreads,
       idleTimeout: 30_000,
