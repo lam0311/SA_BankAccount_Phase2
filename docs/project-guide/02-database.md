@@ -118,10 +118,10 @@ Database kiểm tra quan hệ bằng FK, tính duy nhất bằng unique và đi�
 
 `DECIMAL(18,0)` lưu số nguyên chính xác; JSON dùng string để tránh vượt vùng số nguyên an toàn của JavaScript. Client không chuyển tiền sang `number` để tính toán. Ngày giờ lưu TIMESTAMPTZ và response dùng chuỗi ISO; nên gửi bộ lọc thời gian có múi giờ rõ ràng.
 
-## 5. Transaction và migration
+## 5. Transaction, đồng bộ Cache và migration
 
-Mở tài khoản có tiền ban đầu ghi account + OPENING_DEPOSIT trong một transaction. Nạp/rút khóa account, cập nhật balance và thêm transaction. Chuyển tiền khóa hai account, cập nhật hai balance, thêm transfer và hai transaction trong cùng unit of work.
+Mở tài khoản có tiền ban đầu ghi account + OPENING_DEPOSIT trong một transaction trên nhánh Command (`PrismaAccountCommandRepository`), trong khi các truy vấn đọc chi tiết hoặc danh sách tài khoản đi qua nhánh Query riêng (`PrismaAccountQueryRepository` bọc bởi `CachedAccountQueryRepository`). Nạp/rút khóa account, cập nhật balance và thêm transaction. Chuyển tiền khóa hai account, cập nhật hai balance, thêm transfer và hai transaction trong cùng unit of work; ngay sau khi transaction commit thành công, `PrismaUnitOfWork` tự động xóa cache L1/L2 của các tài khoản có thay đổi số dư.
 
 Chạy migration hiện có bằng `npx prisma migrate deploy` sau khi cấu hình đúng DATABASE_URL; Compose đã có service `migrate` làm bước này. Không thay thế bằng `prisma db push` nếu cần cả CHECK constraint trong SQL migration. `npx prisma generate` chỉ sinh client, không áp dụng schema lên database.
 
-Chi tiết triển khai: [PrismaAccountRepository](../../src/modules/accounts/infrastructure/persistence/prisma-account.repository.ts), [PrismaUnitOfWork](../../src/modules/money-movement/infrastructure/persistence/prisma-unit-of-work.ts). Hướng dẫn kiểm tra constraint: [tài liệu hiện có](../database-check-constraints.md). Cách chuẩn bị DB test: [kiểm thử](06-testing.md).
+Chi tiết triển khai: [PrismaAccountCommandRepository](../../src/modules/accounts/infrastructure/persistence/prisma-account-command.repository.ts), [PrismaAccountQueryRepository](../../src/modules/accounts/infrastructure/persistence/prisma-account-query.repository.ts), [PrismaUnitOfWork](../../src/modules/money-movement/infrastructure/persistence/prisma-unit-of-work.ts), [PrismaOutboxHealthIndicator](../../src/modules/health/infrastructure/prisma-outbox-health.indicator.ts). Hướng dẫn kiểm tra constraint: [tài liệu hiện có](../database-check-constraints.md). Cách chuẩn bị DB test: [kiểm thử](06-testing.md).

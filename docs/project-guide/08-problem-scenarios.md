@@ -68,16 +68,19 @@ Tài liệu phân tích chi tiết 9 tình huống biên và xung đột đồng
 – **Bối cảnh:** Tài khoản đang có số dư 0 VND. Người dùng gửi lệnh đóng tài khoản, đồng thời có một lệnh nạp 100.000 VND từ một nguồn khác gửi tới cùng lúc.  
 – **Nguy cơ tiềm ẩn:** Tài khoản bị đóng nhưng bên trong vẫn còn 100.000 VND vừa được nạp vào, khiến tiền bị đóng băng không thể rút ra.  
 – **Giải pháp của hệ thống:**  
+  – Theo mô hình CQRS, `CloseAccountHandler` luôn làm việc trực tiếp trên Primary PostgreSQL thông qua `AccountCommandRepositoryPort` (tuyệt đối không đọc trạng thái hay số dư qua tầng Cache).  
   – Thao tác đóng tài khoản thực thi câu lệnh SQL UPDATE có điều kiện nguyên tử:  
     ```sql
     UPDATE bank_accounts 
     SET status = 'CLOSED', closed_at = NOW() 
     WHERE id = :id AND user_id = :userId AND status = 'ACTIVE' AND current_balance = 0;
     ```
-  – Nếu số lượng dòng bị ảnh hưởng bằng 0, nghĩa là số dư đã bị thay đổi hoặc trạng thái không còn là ACTIVE, use case lập tức đọc lại dữ liệu mới nhất:  
+  – Nếu số lượng dòng bị ảnh hưởng bằng 0, nghĩa là số dư đã bị thay đổi hoặc trạng thái không còn là ACTIVE, handler lập tức đọc lại dữ liệu mới nhất từ Primary DB:  
     – Nếu có tiền nạp vào trước: Ném lỗi 409 ACCOUNT_HAS_BALANCE để từ chối đóng.  
     – Nếu tài khoản đã được đóng trước: Ném lỗi 409 ACCOUNT_NOT_ACTIVE cho lệnh nạp tiền.  
-– **Kết quả thực tế:** Không bao giờ xảy ra tình trạng tài khoản đóng mà số dư khác 0.  
+  – Ngay sau khi đóng tài khoản hoặc sau khi `PrismaUnitOfWork` commit giao dịch nạp/rút/chuyển khoản thành công, `AccountCacheInvalidator` tự động xóa cache L1/L2 của tài khoản để nhánh Query không bao giờ trả về trạng thái hay số dư cũ (*stale balance*).  
+– **Kết quả thực tế:** Không bao giờ xảy ra tình trạng tài khoản đóng mà số dư khác 0, đồng thời dữ liệu đọc qua cache luôn nhất quán ngay sau giao dịch.  
+– **Vị trí mã nguồn:** [CloseAccountHandler](../../src/modules/accounts/application/commands/close-account.command.ts), [PrismaAccountCommandRepository](../../src/modules/accounts/infrastructure/persistence/prisma-account-command.repository.ts), [PrismaUnitOfWork](../../src/modules/money-movement/infrastructure/persistence/prisma-unit-of-work.ts).  
 
 ## 7. Sai số làm tròn khi tính toán số tiền lớn
 

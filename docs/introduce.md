@@ -53,6 +53,7 @@ Base URL: `/api/v1`
 
 | Method | Endpoint | Xác thực | Mục đích | Mã HTTP thành công |
 | :--- | :--- | :---: | :--- | :---: |
+| `GET` | `/health` | Không | Kiểm tra sức khỏe toàn diện (Postgres, Redis, Piscina, Outbox) | `200 OK` / `503` |
 | `POST` | `/auth/register` | Không | Đăng ký người dùng mới | `201 Created` |
 | `POST` | `/auth/login` | Không | Đăng nhập lấy access token | `200 OK` |
 | `POST` | `/accounts` | JWT | Mở tài khoản ngân hàng | `201 Created` |
@@ -70,7 +71,9 @@ Hệ thống bắt lỗi tập trung qua `GlobalExceptionFilter` và trả về 
 – **`401 Unauthorized`:** Thiếu token, token không hợp lệ, token hết hạn hoặc sai thông tin đăng nhập.  
 – **`404 Not Found`:** Tài khoản không tồn tại hoặc tài khoản không thuộc quyền sở hữu của người gọi nhằm tránh tiết lộ thông tin tài khoản của người khác.  
 – **`409 Conflict`:** Xung đột nghiệp vụ như email đã tồn tại, số dư không đủ để rút hoặc chuyển tiền, tài khoản đã bị đóng, đóng tài khoản khi vẫn còn tiền.  
+– **`429 Too Many Requests`:** Vượt quá ngưỡng giới hạn tần suất request (Token Bucket Rate Limiter).  
 – **`500 Internal Server Error`:** Lỗi không mong muốn từ hệ thống, chỉ trả về `requestId` để tra soát log, không làm lộ stack trace hay cấu trúc database.  
+– **`503 Service Unavailable`:** Thành phần sống còn (PostgreSQL hoặc Piscina Worker Pool) ngừng hoạt động khi kiểm tra sức khỏe hoặc hàng đợi xử lý tạm thời quá tải.  
 
 ## 4. Các quy tắc nghiệp vụ cốt lõi
 

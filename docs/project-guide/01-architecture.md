@@ -4,24 +4,27 @@
 
 ## 1. Kiểu kiến trúc
 
-SA Bank Account là **modular monolith**: một ứng dụng NestJS chứa ba module nghiệp vụ và dùng chung một PostgreSQL. Bên trong ứng dụng, mã nguồn áp dụng các nguyên tắc của **Clean Architecture** và **Hexagonal Architecture (Ports & Adapters)**:
+SA Bank Account là **modular monolith**: một ứng dụng NestJS chứa ba module nghiệp vụ chính (`identity`, `accounts`, `money-movement`) cùng module giám sát vận hành (`health`), dùng chung PostgreSQL và bộ nhớ đệm đa tầng (L1 In-Memory LRU + L2 Redis). Bên trong ứng dụng, mã nguồn áp dụng các nguyên tắc của **Clean Architecture**, **Hexagonal Architecture (Ports & Adapters)** và **CQRS (Command Query Responsibility Segregation)**:
 
-– **Clean Architecture:** phân chia presentation, application, domain và infrastructure. Use case và domain không import NestJS hay Prisma; module NestJS kết nối các thành phần bằng dependency injection.  
-– **Hexagonal Architecture:** controller HTTP tiếp nhận yêu cầu và gọi use case; các port định nghĩa hợp đồng mà nghiệp vụ cần, còn adapter hiện thực hợp đồng bằng Prisma, JWT hoặc bcrypt. Ví dụ, `UnitOfWorkPort` được triển khai bởi `PrismaUnitOfWork`.  
+– **Clean Architecture:** phân chia presentation, application, domain và infrastructure. Use case, command/query handler và domain không import NestJS hay Prisma; module NestJS kết nối các thành phần bằng dependency injection.  
+– **Hexagonal Architecture:** controller HTTP tiếp nhận yêu cầu và gọi use case hoặc handler; các port định nghĩa hợp đồng mà nghiệp vụ cần, còn adapter hiện thực hợp đồng bằng Prisma, Redis/LRU, Piscina bcrypt hoặc JWT. Ví dụ, `UnitOfWorkPort` được triển khai bởi `PrismaUnitOfWork`, và `OutboxHealthIndicatorPort` được triển khai bởi `PrismaOutboxHealthIndicator`.  
+– **CQRS trên phân hệ Accounts:** tách biệt hoàn toàn nhánh ghi (`OpenAccountHandler`, `CloseAccountHandler` thao tác trực tiếp trên Primary DB để đảm bảo tính nhất quán mạnh) và nhánh đọc (`GetAccountQueryHandler`, `ListAccountsQueryHandler` trả `AccountReadModel` phẳng qua tầng Cache-Aside đa tầng L1/L2).  
 
-Các module được triển khai cùng ứng dụng và sử dụng chung database. Khi chuyển khoản, việc cập nhật số dư nguồn, số dư đích và ghi lịch sử được thực hiện trong cùng một database transaction.
+Các module được triển khai cùng ứng dụng và sử dụng chung database. Khi chuyển khoản, việc cập nhật số dư nguồn, số dư đích và ghi lịch sử được thực hiện trong cùng một database transaction, sau đó tự động vô hiệu hóa cache của các tài khoản bị biến động số dư ngay sau khi commit thành công.
 
 ## 2. Ranh giới module
 
 | Module | Thành phần chính | Trách nhiệm |
 | --- | --- | --- |
-| identity | AuthController; RegisterUserUseCase; LoginUseCase | Đăng ký, xác thực mật khẩu, trả JWT |
-| accounts | AccountsController; Open/List/Get/CloseAccountUseCase | Quản lý vòng đời tài khoản |
-| money-movement | TransactionController; TransfersController; Deposit/Withdraw/Transfer/GetTransactionHistoryUseCase | Điều phối tiền và lịch sử |
-| common | Money, AccessTokenGuard, filter, pipe, interceptor, logger | Quy ước dùng chung xuyên module |
+| identity | AuthController; RegisterUserUseCase; LoginUseCase; BcryptPasswordHasher (Piscina) | Đăng ký, xác thực mật khẩu qua Worker Pool, cấp JWT |
+| accounts | AccountsController; Open/CloseAccountHandler (Command); List/GetAccountQueryHandler (Query); AccountCacheInvalidator | Quản lý vòng đời tài khoản theo CQRS, tra cứu qua Multi-level Cache và quản lý xóa cache |
+| money-movement | TransactionController; TransfersController; Deposit/Withdraw/Transfer/GetTransactionHistoryUseCase | Điều phối nạp, rút, chuyển khoản, lịch sử và xóa cache tài khoản sau commit |
+| health | HealthController; HealthService; PrismaOutboxHealthIndicator | Giám sát sức khỏe toàn diện (PostgreSQL, Redis, Piscina Worker Pool, Outbox lag) |
+| common | Money, AccessTokenGuard, RateLimiterGuard, TrafficLoadService, filter, pipe, interceptor, logger | Quy ước dùng chung, bảo mật, giới hạn tần suất và quan sát hệ thống xuyên module |
 | infrastructure/prisma | PrismaService, PrismaModule | Cung cấp kết nối DB và Prisma Client |
+| infrastructure/cache | MultiLevelCacheService, CacheModule | Cung cấp bộ nhớ đệm đa tầng L1 (LRU RAM) + L2 (Redis) |
 
-[AppModule](../../src/app.module.ts) ghép ba module nghiệp vụ cùng các module cấu hình, logging và kết nối database. Việc tra tài khoản đích theo số tài khoản được thực hiện trong luồng chuyển khoản.
+[AppModule](../../src/app.module.ts) ghép các module nghiệp vụ và giám sát cùng các module cấu hình, quan sát, cache và kết nối database. Việc tra cứu tài khoản hoặc xóa cache liên module giữa `money-movement` và `accounts` được thực hiện qua các port được export (`ACCOUNTS_FACADE`, `ACCOUNT_CACHE`).
 
 ## 3. Cấu trúc đầy đủ thư mục src
 
@@ -30,12 +33,17 @@ Cây dưới đây liệt kê toàn bộ thư mục và file trong `src`, bao g�
 ```text
 src/
 ├── common/  # Thành phần dùng chung
+│   ├── concurrency/  # Theo dõi tải lưu lượng đồng thời
+│   │   ├── concurrency.module.ts
+│   │   ├── index.ts
+│   │   └── traffic-load.service.ts
 │   ├── config/  # Cấu hình ứng dụng và biến môi trường
 │   │   ├── app.config.ts
 │   │   ├── database.config.ts
 │   │   ├── env.schema.ts
 │   │   ├── index.ts
-│   │   └── jwt.config.ts
+│   │   ├── jwt.config.ts
+│   │   └── redis.config.ts
 │   ├── domain/  # Money và lỗi dùng chung
 │   │   ├── errors/
 │   │   │   ├── app.error.ts
@@ -54,46 +62,60 @@ src/
 │   │   │   └── response-envelope.interceptor.ts
 │   │   ├── middleware/
 │   │   │   ├── index.ts
-│   │   │   └── request-id.middleware.ts
+│   │   │   ├── request-id.middleware.ts
+│   │   │   └── traffic-load.middleware.ts
 │   │   ├── pipes/
 │   │   │   ├── index.ts
 │   │   │   └── validation-pipe.factory.ts
 │   │   └── swagger/
 │   │       ├── response.schemas.ts
 │   │       └── swagger.config.ts
-│   ├── observability/  # Logging
+│   ├── observability/  # Logging và giám sát Event Loop
+│   │   ├── event-loop-monitor.service.ts
 │   │   ├── index.ts
 │   │   ├── logger.service.ts
 │   │   └── observability.module.ts
-│   └── security/  # Guard, decorator và port xác thực
+│   └── security/  # Guard, decorator, rate limit và port xác thực
 │       ├── decorators/
 │       │   ├── current-user.decorator.ts
 │       │   ├── index.ts
-│       │   └── public.decorator.ts
+│       │   ├── public.decorator.ts
+│       │   └── rate-limit.decorator.ts
 │       ├── guards/
 │       │   ├── access-token.guard.ts
-│       │   └── index.ts
-│       └── ports/
-│           ├── index.ts
-│           └── token-service.port.ts
+│       │   ├── index.ts
+│       │   └── rate-limiter.guard.ts
+│       ├── ports/
+│       │   ├── index.ts
+│       │   └── token-service.port.ts
+│       └── rate-limit/
+│           └── redis-token-bucket.service.ts
 ├── infrastructure/  # Hạ tầng dùng chung
+│   ├── cache/  # Bộ nhớ đệm đa tầng L1 LRU + L2 Redis
+│   │   ├── cache.module.ts
+│   │   └── multi-level-cache.service.ts
 │   └── prisma/  # Prisma Client và kết nối database
 │       ├── index.ts
 │       ├── prisma.module.ts
 │       └── prisma.service.ts
-├── modules/  # Các module theo nghiệp vụ
-│   ├── accounts/  # Quản lý tài khoản
+├── modules/  # Các module nghiệp vụ và vận hành
+│   ├── accounts/  # Quản lý tài khoản theo mô hình CQRS
 │   │   ├── application/
+│   │   │   ├── commands/
+│   │   │   │   ├── close-account.command.ts
+│   │   │   │   ├── index.ts
+│   │   │   │   └── open-account.command.ts
 │   │   │   ├── ports/
-│   │   │   │   ├── account.repository.port.ts
+│   │   │   │   ├── account-cache.port.ts
+│   │   │   │   ├── account-command.repository.port.ts
+│   │   │   │   ├── account-query.repository.port.ts
 │   │   │   │   ├── accounts.facade.ts
 │   │   │   │   └── index.ts
-│   │   │   └── use-cases/
-│   │   │       ├── close-account.use-case.ts
-│   │   │       ├── get-account.use-case.ts
+│   │   │   └── queries/
+│   │   │       ├── account.read-model.ts
+│   │   │       ├── get-account.query.ts
 │   │   │       ├── index.ts
-│   │   │       ├── list-accounts.use-case.ts
-│   │   │       └── open-account.use-case.ts
+│   │   │       └── list-accounts.query.ts
 │   │   ├── domain/
 │   │   │   ├── entities/
 │   │   │   │   ├── bank-account.entity.ts
@@ -109,8 +131,11 @@ src/
 │   │   │   ├── adapters/
 │   │   │   │   └── account-lookup.facade.ts
 │   │   │   └── persistence/
+│   │   │       ├── account-cache.invalidator.ts
+│   │   │       ├── cached-account-query.repository.ts
 │   │   │       ├── index.ts
-│   │   │       └── prisma-account.repository.ts
+│   │   │       ├── prisma-account-command.repository.ts
+│   │   │       └── prisma-account-query.repository.ts
 │   │   ├── presentation/
 │   │   │   └── http/
 │   │   │       ├── dto/
@@ -121,6 +146,19 @@ src/
 │   │   │       ├── accounts.controller.ts
 │   │   │       └── index.ts
 │   │   └── accounts.module.ts
+│   ├── health/  # Giám sát sức khỏe hệ thống toàn diện
+│   │   ├── application/
+│   │   │   ├── ports/
+│   │   │   │   └── outbox-health.port.ts
+│   │   │   └── health.service.ts
+│   │   ├── infrastructure/
+│   │   │   └── prisma-outbox-health.indicator.ts
+│   │   ├── presentation/
+│   │   │   └── http/
+│   │   │       ├── dto/
+│   │   │       │   └── health-response.schema.ts
+│   │   │       └── health.controller.ts
+│   │   └── health.module.ts
 │   ├── identity/  # Danh tính và xác thực
 │   │   ├── application/
 │   │   │   ├── ports/
@@ -150,6 +188,7 @@ src/
 │   │   │   │   └── prisma-user.repository.ts
 │   │   │   └── security/
 │   │   │       ├── bcrypt-password-hasher.ts
+│   │   │       ├── bcrypt.worker.ts
 │   │   │       ├── index.ts
 │   │   │       └── jwt-token.service.ts
 │   │   ├── presentation/
@@ -226,14 +265,16 @@ Trong mỗi module nghiệp vụ, các thư mục có vai trò sau:
 | Thư mục | Vai trò |
 | --- | --- |
 | `presentation/http` | Controller, DTO đầu vào và schema response cho Swagger |
-| `application/use-cases` | Điều phối từng thao tác nghiệp vụ |
-| `application/ports` | Hợp đồng truy cập dữ liệu và dịch vụ mà use case sử dụng |
+| `application/use-cases` | Điều phối từng thao tác nghiệp vụ (trong `identity`, `money-movement`) |
+| `application/commands` | Command Handlers xử lý nhánh ghi nhất quán mạnh (trong `accounts`) |
+| `application/queries` | Query Handlers và Read Model phẳng tối ưu cho nhánh đọc & cache (trong `accounts`) |
+| `application/ports` | Hợp đồng truy cập dữ liệu, cache và dịch vụ mà use case / handler sử dụng |
 | `domain` | Entity, enum, value object và lỗi nghiệp vụ |
-| `infrastructure/persistence` | Repository, truy vấn và unit of work dùng Prisma |
+| `infrastructure/persistence` | Repository (Command/Query), Cache-Aside decorator, cache invalidator và unit of work |
 | `infrastructure/adapters` | Các implementation kết nối qua port hoặc facade |
-| `infrastructure/security` | Implementation JWT và bcrypt của module identity |
+| `infrastructure/security` | Implementation JWT và Piscina bcrypt worker pool của module `identity` |
 
-`staff-support` chứa khung thư mục và các file `index.ts`; `AppModule` đăng ký ba module nghiệp vụ `identity`, `accounts` và `money-movement`. Các file `index.ts` dùng để tập hợp export hoặc giữ vị trí cho nhóm mã tương ứng.
+`staff-support` chứa khung thư mục và các file `index.ts`; `AppModule` đăng ký ba module nghiệp vụ `identity`, `accounts`, `money-movement` cùng module giám sát `health`. Các file `index.ts` dùng để tập hợp export hoặc giữ vị trí cho nhóm mã tương ứng.
 
 ## 4. Trách nhiệm từng lớp
 
@@ -281,8 +322,8 @@ flowchart TD
 
 Sơ đồ áp dụng cho các API controller của ứng dụng. Nhánh PostgreSQL minh họa adapter dữ liệu; adapter bcrypt hoặc JWT thực hiện tác vụ riêng, không cần đọc/ghi database.
 
-1. **Middleware:** gắn request ID để liên kết response và log.
-2. **Guard:** xác thực Bearer token trước khi chạy phương thức controller. Route `@Public()` được bỏ qua yêu cầu JWT.
+1. **Middleware:** gắn request ID để liên kết response và log; đồng thời `TrafficLoadMiddleware` đếm số request nghiệp vụ đang xử lý song song (tự động bỏ qua các đường dẫn `/auth/*`, `/health` và `/api/docs` để probe giám sát hoặc luồng xác thực không làm nhiễu bộ đếm tải).
+2. **Guard:** `RateLimiterGuard` kiểm tra hạn ngạch Token Bucket trên Redis (nếu route khai báo `@RateLimit`), sau đó `AccessTokenGuard` xác thực Bearer token trước khi chạy phương thức controller. Các route gắn `@Public()` (`/auth/register`, `/auth/login`, `/health`) được bỏ qua yêu cầu JWT.
 3. **Interceptor chiều vào:** bắt đầu đo thời gian xử lý sau guard, trước validation pipe.
 4. **Validation pipe:** chuyển đổi dữ liệu theo cấu hình DTO, kiểm tra ràng buộc và từ chối field ngoài hợp đồng.
 5. **Controller:** nhận dữ liệu đã kiểm tra, lấy danh tính đã xác thực và gọi use case. Controller có thể kiểm tra thêm header, như `Idempotency-Key` của chuyển tiền.
@@ -386,10 +427,68 @@ Các mũi tên từ use case tới DB biểu diễn thao tác qua transaction co
 
 Lịch sử giao dịch được ghi và đọc qua API; API không cung cấp thao tác sửa/xóa lịch sử. Quyền thay đổi dữ liệu bằng SQL trực tiếp thuộc phạm vi quản trị database. Chi tiết quy tắc ghi dữ liệu nằm trong [database](02-database.md) và [nghiệp vụ](04-business-rules.md).
 
-## 8. Điểm bắt đầu đọc mã
+## 8. Mô hình CQRS và đồng bộ Cache trên Module Accounts
+
+Để tối ưu hóa đồng thời **tốc độ đọc lưu lượng lớn** và **tính nhất quán tuyệt đối khi thay đổi trạng thái tài khoản**, phân hệ `accounts` tách rời hoàn toàn nhánh ghi (Command) và nhánh đọc (Query):
+
+```mermaid
+flowchart LR
+    Controller["AccountsController"] --> Cmd["Command Handlers:<br/>OpenAccount / CloseAccount"]
+    Controller --> Qry["Query Handlers:<br/>GetAccount / ListAccounts"]
+
+    Cmd --> CmdPort["AccountCommandRepositoryPort"]
+    CmdPort --> CmdRepo["PrismaAccountCommandRepository"]
+    CmdRepo --> PrimaryDB[("PostgreSQL Primary DB")]
+
+    Qry --> QryPort["AccountQueryRepositoryPort"]
+    QryPort --> CacheRepo["CachedAccountQueryRepository"]
+    CacheRepo -->|Hit / Set| MultiCache[("L1 LRU (15s) + L2 Redis (30s/60s)")]
+    CacheRepo -->|Cache Miss| QryRepo["PrismaAccountQueryRepository"]
+    QryRepo --> PrimaryDB
+
+    Cmd -->|Sau khi ghi thành công| Invalidator["AccountCacheInvalidator<br/>(AccountCachePort)"]
+    UoW["PrismaUnitOfWork<br/>(MoneyMovementModule)"] -->|Sau khi COMMIT transaction| Invalidator
+    Invalidator -->|Xóa id, acc_no, user list| MultiCache
+```
+
+### 8.1. Nhánh Ghi (Command Side — Strong Consistency)
+– **Thành phần:** [OpenAccountHandler](../../src/modules/accounts/application/commands/open-account.command.ts) và [CloseAccountHandler](../../src/modules/accounts/application/commands/close-account.command.ts) phụ thuộc vào `AccountCommandRepositoryPort` (hiện thực bởi [PrismaAccountCommandRepository](../../src/modules/accounts/infrastructure/persistence/prisma-account-command.repository.ts)).  
+– **Đặc tính:** Tuyệt đối **không đọc dữ liệu qua Cache**. Mọi kiểm tra số dư bằng 0 khi đóng tài khoản (`closeIfZeroBalance`) hay khởi tạo tài khoản kèm `OPENING_DEPOSIT` đều thao tác trực tiếp với Primary PostgreSQL bằng Domain Entity `BankAccount` và Value Object `Money`, ngăn chặn triệt để rủi ro quyết định nghiệp vụ dựa trên bản ghi cache cũ (*stale read*).  
+
+### 8.2. Nhánh Đọc (Query Side — Flat Read Model & Multi-level Cache)
+– **Thành phần:** [GetAccountQueryHandler](../../src/modules/accounts/application/queries/get-account.query.ts), [ListAccountsQueryHandler](../../src/modules/accounts/application/queries/list-accounts.query.ts) và [AccountLookupFacade](../../src/modules/accounts/infrastructure/adapters/account-lookup.facade.ts) phụ thuộc vào `AccountQueryRepositoryPort`.  
+– **Read Model phẳng:** [AccountReadModel](../../src/modules/accounts/application/queries/account.read-model.ts) biểu diễn sẵn `currentBalance` dạng `string` và `createdAt`/`closedAt` dạng chuỗi ISO 8601. Nhờ đó, luồng đọc không tốn chi phí cấp phát `Money` (`bigint`) hay `Date` khi serialize/deserialize qua cache.  
+– **Cache-Aside Đa tầng:** [CachedAccountQueryRepository](../../src/modules/accounts/infrastructure/persistence/cached-account-query.repository.ts) đóng vai trò Decorator bọc ngoài [PrismaAccountQueryRepository](../../src/modules/accounts/infrastructure/persistence/prisma-account-query.repository.ts):  
+  1. Tra cứu **L1 In-Memory LRU Cache** (tối đa 1000 keys, TTL tối đa 15 giây ngay trong RAM tiến trình Node.js).  
+  2. Nếu miss L1, tra cứu **L2 Redis Cache** (TTL 60 giây cho chi tiết tài khoản theo ID/số tài khoản; 30 giây cho trang danh sách tài khoản) và nạp ngược lên L1. Nếu Redis gặp sự cố, `MultiLevelCacheService` tự động suy giảm mềm (*graceful degradation*) về L1 + DB mà không làm gián đoạn request.  
+  3. Nếu miss cả hai tầng, truy vấn PostgreSQL với mệnh đề `SELECT` chỉ chiếu đúng các cột của `AccountReadModel`. Cấu trúc này cũng cho phép điều hướng riêng `PrismaAccountQueryRepository` sang Read Replica trong tương lai mà không chạm tới nhánh Command.  
+
+### 8.3. Xóa Cache Sau Commit Liên Module (Post-Commit Cache Invalidation)
+Một thách thức kinh điển khi cache tài khoản là các giao dịch nạp tiền, rút tiền và chuyển khoản lại diễn ra bên trong module `money-movement`. Hệ thống giải quyết triệt để nguy cơ *stale balance* như sau:
+– `AccountsModule` export port `ACCOUNT_CACHE` ([AccountCacheInvalidator](../../src/modules/accounts/infrastructure/persistence/account-cache.invalidator.ts)) sang `MoneyMovementModule`.  
+– Trong [PrismaUnitOfWork](../../src/modules/money-movement/infrastructure/persistence/prisma-unit-of-work.ts), mỗi khi khóa hoặc cập nhật tài khoản trong `prisma.$transaction`, context ghi nhận thông tin định danh (`id`, `userId`, `accountNumber`) vào `knownAccounts` và đánh dấu các tài khoản thực sự đổi số dư vào `touchedAccountIds`.  
+– **Chỉ sau khi khối `$transaction` đã `COMMIT` thành công xuống PostgreSQL**, `PrismaUnitOfWork` mới kích hoạt `accountCache.invalidateAccount(...)` để xóa đồng bộ cả khóa chi tiết (`accounts:id:{id}`), khóa tra cứu số tài khoản (`accounts:acc_no:{accountNumber}`) và toàn bộ phân trang danh sách của chủ tài khoản (`accounts:user:{userId}:*`) trên cả L1 và L2. Nếu transaction bị rollback do lỗi nghiệp vụ, cache không bị can thiệp sai lệch.  
+
+## 9. Kiến trúc Giám sát Sức khỏe Toàn diện (`HealthModule`)
+
+Module `health` cung cấp endpoint vận hành `GET /api/v1/health` theo kiến trúc Ports & Adapters nhằm phục vụ Docker `HEALTHCHECK`, Load Balancer và hệ thống giám sát tập trung:
+
+| Thành phần kiểm tra | Cách thức đo lường | Timeout | Ngưỡng suy giảm / lỗi | Tác động tới HTTP Status |
+| --- | --- | --- | --- | --- |
+| **PostgreSQL** (`postgres`) | Truy vấn `SELECT 1` qua `PrismaService`, đo `latencyMs` | `2000ms` | Lỗi kết nối hoặc quá hạn $\rightarrow$ `DOWN` | **Sống còn:** Trả `503 SERVICE_UNAVAILABLE` |
+| **Piscina Pool** (`piscina`) | Đọc metrics từ `BcryptPasswordHasher` (`inFlight`, `queued`, `maxThreads`, `maxQueue`, `currentLimit`) | Tức thời (RAM) | `isDestroyed` $\rightarrow$ `DOWN`; `queued >= maxQueue` $\rightarrow$ `DEGRADED` | `DOWN` trả `503`; `DEGRADED` giữ `200 OK` |
+| **Redis Cache** (`redis`) | Lệnh `PING` qua `MultiLevelCacheService.ping()`, đo `latencyMs` | `1500ms` | Mất kết nối hoặc timeout $\rightarrow$ `DEGRADED` | **Phụ trợ:** Giữ `200 OK` (`status: "DEGRADED"`) |
+| **Outbox Lag** (`outbox`) | `OutboxHealthIndicatorPort` kiểm tra bảng Outbox, đếm `pendingCount` và tuổi bản ghi cũ nhất `lagMs` | `1500ms` | `lagMs > OUTBOX_MAX_LAG_MS` (mặc định `30000ms`) hoặc timeout $\rightarrow$ `DEGRADED` | **Phụ trợ:** Giữ `200 OK` (`status: "DEGRADED"`) |
+
+– **Kiểm tra song song có giới hạn thời gian:** [HealthService](../../src/modules/health/application/health.service.ts) thực thi đồng thời cả 4 phép kiểm tra bằng `Promise.all` kết hợp `Promise.race` và `timer.unref()`, đảm bảo tổng thời gian phản hồi của `/health` luôn bị chặn trên ngay cả khi mạng DB hoặc Redis bị treo.  
+– **Tương thích linh hoạt cho Transactional Outbox:** [PrismaOutboxHealthIndicator](../../src/modules/health/infrastructure/prisma-outbox-health.indicator.ts) truy vấn `information_schema.columns` để tự động nhận diện bảng Outbox (`outbox_events`, `outbox_messages`, `outbox`). Khi schema chưa tạo bảng Outbox, indicator trả mặc định `{ status: "OK", pendingCount: 0, lagMs: 0 }`; khi bảng tồn tại, nó tự động đo số bản ghi chưa phát hành và độ trễ tính bằng mili-giây.  
+– **Chống khởi động lại dây chuyền (Anti-Cascading Restart):** Khi Redis bảo trì hoặc hàng đợi Piscina đầy tạm thời dưới tải đăng nhập đột biến, ứng dụng vẫn xử lý chính xác các giao dịch ngân hàng cốt lõi. Việc trả HTTP `200` kèm `status: "DEGRADED"` giúp hệ thống cảnh báo sớm cho đội vận hành mà không khiến Docker hay Kubernetes giết container đang khỏe mạnh.  
+
+## 10. Điểm bắt đầu đọc mã
 
 – [Bootstrap HTTP](../../src/main.ts) và [AppModule](../../src/app.module.ts).  
-– [MoneyMovementModule](../../src/modules/money-movement/money-movement.module.ts): cấu hình DI.  
-– [TransferMoneyUseCase](../../src/modules/money-movement/application/use-cases/transfer-money.use-case.ts): điều phối chuyển tiền.  
-– [PrismaUnitOfWork](../../src/modules/money-movement/infrastructure/persistence/prisma-unit-of-work.ts): transaction context và khóa dòng.  
-– [PrismaAccountRepository](../../src/modules/accounts/infrastructure/persistence/prisma-account.repository.ts): mở/đóng tài khoản.  
+– [AccountsModule](../../src/modules/accounts/accounts.module.ts): cấu hình DI tách biệt Command Handlers, Query Handlers và Cache-Aside.  
+– [CachedAccountQueryRepository](../../src/modules/accounts/infrastructure/persistence/cached-account-query.repository.ts), [PrismaAccountCommandRepository](../../src/modules/accounts/infrastructure/persistence/prisma-account-command.repository.ts) và [PrismaAccountQueryRepository](../../src/modules/accounts/infrastructure/persistence/prisma-account-query.repository.ts): hiện thực CQRS trên phân hệ tài khoản.  
+– [MoneyMovementModule](../../src/modules/money-movement/money-movement.module.ts) và [TransferMoneyUseCase](../../src/modules/money-movement/application/use-cases/transfer-money.use-case.ts): điều phối chuyển tiền.  
+– [PrismaUnitOfWork](../../src/modules/money-movement/infrastructure/persistence/prisma-unit-of-work.ts): transaction context, khóa dòng và xóa cache tài khoản sau commit.  
+– [HealthService](../../src/modules/health/application/health.service.ts) và [PrismaOutboxHealthIndicator](../../src/modules/health/infrastructure/prisma-outbox-health.indicator.ts): kiểm tra sức khỏe toàn diện hệ thống.  

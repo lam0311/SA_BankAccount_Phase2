@@ -4,7 +4,7 @@
 
 ## 1. Quy ước chung
 
-Base URL mặc định: `http://localhost:3000/api/v1`. Request có body dùng `Content-Type: application/json`. Trừ đăng ký/đăng nhập, mọi endpoint cần `Authorization: Bearer <accessToken>`. Danh tính lấy từ token, không lấy từ `userId` trong body.
+Base URL mặc định: `http://localhost:3000/api/v1`. Request có body dùng `Content-Type: application/json`. Trừ đăng ký, đăng nhập và kiểm tra sức khỏe (`/health`), mọi endpoint cần `Authorization: Bearer <accessToken>`. Danh tính lấy từ token, không lấy từ `userId` trong body.
 
 Tiền được nhận/trả dưới dạng string VND nguyên. Ngày giờ trả dạng ISO 8601. `accountId` trong path phải là UUID v4; `sourceAccountId` trong body transfer được DTO kiểm tra UUID. `accountNumber` là số tài khoản dùng để nhận chuyển tiền, khác ID nội bộ.
 
@@ -107,15 +107,15 @@ Ví dụ: `/accounts?page=1&limit=20&status=ACTIVE`. `data` là mảng account v
 }
 ```
 
-`totalPages` tối thiểu bằng 1, kể cả không có bản ghi. Phân trang dùng offset; mỗi lần đọc trang lấy dữ liệu tại thời điểm truy vấn.
+`totalPages` tối thiểu bằng 1, kể cả không có bản ghi. Phân trang dùng offset; nhánh đọc CQRS phục vụ dữ liệu qua Multi-level Cache (L1 LRU + L2 Redis, TTL 30s) và tự động vô hiệu hóa ngay khi chủ tài khoản mở/đóng tài khoản hoặc phát sinh giao dịch biến động số dư.
 
 ### GET /accounts/{accountId}
 
-Cần JWT. Trả **200**, `data` là account. Chủ sở hữu vẫn xem được account CLOSED. Không tồn tại hoặc không sở hữu trả `404 ACCOUNT_NOT_FOUND`.
+Cần JWT. Trả **200**, `data` là account (đọc qua nhánh Query CQRS với `AccountReadModel` và Multi-level Cache TTL 60s, luôn được xóa cache tức thời sau commit khi số dư hoặc trạng thái thay đổi). Chủ sở hữu vẫn xem được account CLOSED. Không tồn tại hoặc không sở hữu trả `404 ACCOUNT_NOT_FOUND`.
 
 ### DELETE /accounts/{accountId}
 
-Cần JWT. Không có body. Chỉ đóng tài khoản số dư 0; thành công **204**, body rỗng. Đóng lại tài khoản của mình đã CLOSED cũng 204. Còn tiền trả `409 ACCOUNT_HAS_BALANCE`; không tồn tại/không sở hữu trả 404. Đây là đóng logic, không xóa bản ghi hay lịch sử.
+Cần JWT. Không có body. Thực thi trên nhánh Command trực tiếp tại Primary DB (không qua Cache), chỉ đóng tài khoản số dư 0; thành công **204**, body rỗng và xóa cache tài khoản liên quan. Đóng lại tài khoản của mình đã CLOSED cũng 204. Còn tiền trả `409 ACCOUNT_HAS_BALANCE`; không tồn tại/không sở hữu trả 404. Đây là đóng logic, không xóa bản ghi hay lịch sử.
 
 ## 4. Nạp, rút và lịch sử
 
@@ -217,7 +217,65 @@ Lỗi chính: thiếu/sai header trả `400 HTTP_ERROR`; nguồn trùng đích t
 
 **Quy tắc replay:** server tra đích và kiểm tra nguồn khác đích trước bước tìm transfer cũ. Việc nhận diện transfer cũ dựa trên nguồn và key, không so sánh payload/hash. Khi key được dùng với dữ liệu khác, kết quả phụ thuộc các bước kiểm tra này và có thể là transfer cũ thay vì lỗi `409`. Replay cùng payload được kiểm tra quyền sở hữu, nhưng không bị chặn chỉ vì tài khoản đã đóng sau giao dịch. Xem [thứ tự xử lý](04-business-rules.md).
 
-## 6. Mã lỗi
+## 6. Giám sát sức khỏe hệ thống
+
+### GET /health
+
+Không cần JWT (`@Public()`). Kiểm tra song song 4 thành phần hạ tầng của hệ thống và trả kết quả tổng hợp phục vụ Docker `HEALTHCHECK`, Load Balancer và công cụ giám sát.
+
+– **Thành công hoặc suy giảm mềm (`200 OK`):** Khi cả `postgres` và `piscina` đều không ở trạng thái `DOWN`. Trường `data.status` nhận giá trị `"OK"` (tất cả đều khỏe mạnh) hoặc `"DEGRADED"` (khi `redis` mất kết nối, hàng đợi `piscina` chạm trần `maxQueue`, hoặc hàng đợi `outbox` vượt ngưỡng trễ `OUTBOX_MAX_LAG_MS`, mặc định `30000` ms).  
+– **Mất khả năng phục vụ (`503 Service Unavailable`):** Khi `postgres` bị `DOWN` (timeout > `2000ms` hoặc lỗi kết nối) hoặc `piscina` worker pool bị `DOWN` (`isDestroyed`).  
+
+Ví dụ `data` khi trả **200**:
+
+```json
+{
+  "status": "OK",
+  "timestamp": "2026-11-25T03:10:00.000Z",
+  "uptimeSeconds": 120,
+  "checks": {
+    "postgres": {
+      "status": "OK",
+      "latencyMs": 1.45
+    },
+    "redis": {
+      "status": "OK",
+      "latencyMs": 0.52
+    },
+    "piscina": {
+      "status": "OK",
+      "inFlight": 0,
+      "queued": 0,
+      "maxThreads": 3,
+      "maxQueue": 100,
+      "currentLimit": 3
+    },
+    "outbox": {
+      "status": "OK",
+      "pendingCount": 0,
+      "lagMs": 0
+    }
+  }
+}
+```
+
+Ví dụ response đầy đủ khi trả **503**:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "SERVICE_UNAVAILABLE",
+    "message": "System health check failed",
+    "details": [
+      { "field": "postgres", "reason": "down" }
+    ]
+  },
+  "meta": { "requestId": "example-request-id" }
+}
+```
+
+## 7. Mã lỗi
 
 ```json
 {
@@ -245,12 +303,14 @@ Ví dụ minh họa cấu trúc; message/reason cụ thể phụ thuộc nhánh 
 | 409 | INSUFFICIENT_FUNDS | Không đủ số dư |
 | 409 | ACCOUNT_NOT_ACTIVE | Ghi giao dịch mới lên nguồn/tài khoản đã đóng |
 | 409 | ACCOUNT_HAS_BALANCE | Đóng tài khoản còn tiền |
+| 429 | RATE_LIMIT_EXCEEDED | Vượt quá giới hạn tần suất request cho phép |
 | 500 | INTERNAL_ERROR | Lỗi ngoài dự kiến; không trả stack trace |
+| 503 | SERVICE_UNAVAILABLE | Hệ thống quá tải hàng đợi worker hoặc thành phần sống còn (Postgres / Piscina) ngừng hoạt động |
 
 `HTTP_ERROR` là nhánh fallback cho HttpException, không chỉ dành riêng cho 400. Lỗi DB ngoài dự kiến có thể đi vào 500; không phải mọi constraint violation đều được chuyển thành lỗi nghiệp vụ 409.
 
-## 7. Swagger và nguồn hợp đồng
+## 8. Swagger và nguồn hợp đồng
 
 Swagger UI ở `/api/docs`, OpenAPI JSON ở `/api/docs.json` khi `NODE_ENV != production`. Trong Swagger, bấm Authorize và nhập token, không thêm chữ Bearer. Route Swagger nằm ngoài prefix `/api/v1`.
 
-Nguồn đối chiếu: [AuthController](../../src/modules/identity/presentation/http/auth.controller.ts), [AccountsController](../../src/modules/accounts/presentation/http/accounts.controller.ts), [TransactionController](../../src/modules/money-movement/presentation/http/transactions.controller.ts), [TransfersController](../../src/modules/money-movement/presentation/http/transfers.controller.ts), cùng DTO bên cạnh từng controller. Hướng dẫn thao tác: [chạy và demo](05-running.md), [Swagger hiện có](../swagger.md).
+Nguồn đối chiếu: [HealthController](../../src/modules/health/presentation/http/health.controller.ts), [AuthController](../../src/modules/identity/presentation/http/auth.controller.ts), [AccountsController](../../src/modules/accounts/presentation/http/accounts.controller.ts), [TransactionController](../../src/modules/money-movement/presentation/http/transactions.controller.ts), [TransfersController](../../src/modules/money-movement/presentation/http/transfers.controller.ts), cùng DTO bên cạnh từng controller. Hướng dẫn thao tác: [chạy và demo](05-running.md), [Swagger hiện có](../swagger.md).

@@ -43,16 +43,17 @@ Cách tiếp cận này không yêu cầu cài đặt sẵn Node.js hay PostgreS
    ```powershell
    docker compose up --build -d
    ```
-   Lệnh này thực hiện tuần tự 3 việc:
-   – Khởi động service `postgres` và chờ kiểm tra trạng thái khỏe mạnh.  
+   Lệnh này thực hiện điều phối 4 services:
+   – Khởi động `postgres` (PostgreSQL 15) và `redis` (Redis 7), chờ kiểm tra trạng thái khỏe mạnh (`healthy`).  
    – Chạy container `migrate` thực thi lệnh `prisma migrate deploy` để tạo bảng và các ràng buộc CHECK constraint.  
-   – Khởi động backend NestJS `app` lắng nghe tại cổng `3000`.  
+   – Khởi động backend NestJS `app` lắng nghe tại cổng `3000`, tự động kích hoạt chỉ thị `HEALTHCHECK` gọi định kỳ tới `http://127.0.0.1:3000/api/v1/health`.  
 
-4. **Kiểm tra trạng thái các container:**
+4. **Kiểm tra trạng thái các container và Health Check API:**
    ```powershell
    docker compose ps
+   Invoke-RestMethod http://localhost:3000/api/v1/health | ConvertTo-Json -Depth 5
    ```
-   Kết quả mong đợi: `postgres` (healthy), `migrate` (exited 0), `app` (healthy).
+   Kết quả mong đợi: `postgres` (healthy), `redis` (healthy), `migrate` (exited 0), `app` (healthy) và endpoint `/api/v1/health` trả `status: "OK"` kèm thông số độ trễ của Postgres, Redis, Piscina Worker Pool và Outbox.
 
 5. **Xem log ứng dụng khi cần kiểm tra:**
    ```powershell
@@ -93,6 +94,10 @@ Nếu không muốn mở trình duyệt Swagger UI, bạn có thể mở một c
 $baseUrl = 'http://localhost:3000/api/v1'
 $randomSuffix = Get-Random
 $email = "test_user_$randomSuffix@bank.test"
+
+Write-Host "0. Kiểm tra sức khỏe hệ thống (/api/v1/health)..." -ForegroundColor Cyan
+$healthRes = Invoke-RestMethod "$baseUrl/health" -Method Get
+Write-Host "   -> Trạng thái tổng thể: $($healthRes.data.status) (Postgres: $($healthRes.data.checks.postgres.status), Redis: $($healthRes.data.checks.redis.status))" -ForegroundColor Green
 
 Write-Host "1. Đang đăng ký người dùng mới: $email..." -ForegroundColor Cyan
 $regBody = @{

@@ -14,14 +14,14 @@ npm ci
 # 2. Sinh Prisma Client type-safe
 npx prisma generate
 
-# 3. Chạy toàn bộ 25 Unit Test Suites
+# 3. Chạy toàn bộ 30 Unit Test Suites (210 test cases)
 npm test -- --runInBand
 
 # 4. Chạy kiểm tra hợp đồng Swagger OpenAPI
 npm run test:swagger
 ```
 
-– **Kết quả mong đợi:** 25/25 test suites passed (100%), bao phủ toàn bộ các use case: đăng ký, đăng nhập, mở tài khoản, nạp tiền, rút tiền, chuyển khoản và kiểm tra Value Object `Money`.  
+– **Kết quả mong đợi:** 30/30 test suites passed (210/210 test cases, đạt 100%), bao phủ toàn bộ nghiệp vụ cốt lõi và các cơ chế kiến trúc nâng cao: đăng ký, đăng nhập, Piscina Bcrypt Worker Pool, nhánh ghi/đọc CQRS của phân hệ Accounts (`open-account`, `close-account`, `get-account`, `list-accounts`), Cache-Aside & xóa cache (`cached-account-query.spec.ts`), nạp/rút/chuyển khoản, Rate Limiter, Value Object `Money` và kiểm tra sức khỏe toàn diện (`health.service.spec.ts` kiểm chứng đầy đủ trạng thái `OK`, `DEGRADED`, `503 SERVICE_UNAVAILABLE` và timeout).  
 – **`npm run test:swagger`:** Khởi chạy một server HTTP loopback tạm thời để kiểm tra xem cấu trúc Swagger Document sinh ra có khớp chính xác với DTO và Response Envelope hay không.  
 
 ## 2. Integration test với PostgreSQL
