@@ -1,9 +1,6 @@
 import { Module } from '@nestjs/common';
 
-import {
-  ACCOUNT_CACHE,
-  type AccountCachePort,
-} from './application/ports/account-cache.port';
+import { ACCOUNT_CACHE } from './application/ports/account-cache.port';
 import {
   ACCOUNT_COMMAND_REPOSITORY,
   type AccountCommandRepositoryPort,
@@ -21,6 +18,7 @@ import { CloseAccountHandler } from './application/commands/close-account.comman
 import { GetAccountQueryHandler } from './application/queries/get-account.query';
 import { ListAccountsQueryHandler } from './application/queries/list-accounts.query';
 import { AccountLookupFacade } from './infrastructure/adapters/account-lookup.facade';
+import { AccountCacheInvalidationSubscriber } from './infrastructure/events/account-cache-invalidation.subscriber';
 import { AccountCacheInvalidator } from './infrastructure/persistence/account-cache.invalidator';
 import { CachedAccountQueryRepository } from './infrastructure/persistence/cached-account-query.repository';
 import { PrismaAccountCommandRepository } from './infrastructure/persistence/prisma-account-command.repository';
@@ -34,6 +32,7 @@ import { AccountsController } from './presentation/http/accounts.controller';
     PrismaAccountQueryRepository,
     CachedAccountQueryRepository,
     AccountCacheInvalidator,
+    AccountCacheInvalidationSubscriber,
 
     {
       provide: ACCOUNT_COMMAND_REPOSITORY,
@@ -48,22 +47,18 @@ import { AccountsController } from './presentation/http/accounts.controller';
       useExisting: AccountCacheInvalidator,
     },
 
-    // --- Command Handlers (Write side: Primary DB + Cache Invalidation) ---
+    // --- Command Handlers (Write side: Primary DB + Transactional Outbox) ---
     {
       provide: OpenAccountHandler,
-      useFactory: (
-        commandRepo: AccountCommandRepositoryPort,
-        cache: AccountCachePort,
-      ) => new OpenAccountHandler(commandRepo, cache),
-      inject: [ACCOUNT_COMMAND_REPOSITORY, ACCOUNT_CACHE],
+      useFactory: (commandRepo: AccountCommandRepositoryPort) =>
+        new OpenAccountHandler(commandRepo),
+      inject: [ACCOUNT_COMMAND_REPOSITORY],
     },
     {
       provide: CloseAccountHandler,
-      useFactory: (
-        commandRepo: AccountCommandRepositoryPort,
-        cache: AccountCachePort,
-      ) => new CloseAccountHandler(commandRepo, cache),
-      inject: [ACCOUNT_COMMAND_REPOSITORY, ACCOUNT_CACHE],
+      useFactory: (commandRepo: AccountCommandRepositoryPort) =>
+        new CloseAccountHandler(commandRepo),
+      inject: [ACCOUNT_COMMAND_REPOSITORY],
     },
 
     // --- Query Handlers & Read Facade (Read side: Multi-level Cache -> DB) ---
@@ -86,6 +81,6 @@ import { AccountsController } from './presentation/http/accounts.controller';
       inject: [ACCOUNT_QUERY_REPOSITORY],
     },
   ],
-  exports: [ACCOUNTS_FACADE, ACCOUNT_CACHE],
+  exports: [ACCOUNTS_FACADE],
 })
 export class AccountsModule {}

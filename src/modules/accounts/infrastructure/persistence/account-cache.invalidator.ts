@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { MultiLevelCacheService } from '@src/infrastructure/cache/multi-level-cache.service';
 import type {
+  AccountCacheInvalidateOptions,
   AccountCachePort,
   InvalidateAccountCacheInput,
 } from '../../application/ports/account-cache.port';
@@ -23,27 +24,44 @@ export const accountCacheKeys = {
 export class AccountCacheInvalidator implements AccountCachePort {
   constructor(private readonly cache: MultiLevelCacheService) {}
 
-  async invalidateAccount(input: InvalidateAccountCacheInput): Promise<void> {
+  async invalidateAccount(
+    input: InvalidateAccountCacheInput,
+    options?: AccountCacheInvalidateOptions,
+  ): Promise<void> {
     const tasks: Promise<void>[] = [
-      this.cache.del(accountCacheKeys.byId(input.id)),
+      options
+        ? this.cache.del(accountCacheKeys.byId(input.id), options)
+        : this.cache.del(accountCacheKeys.byId(input.id)),
     ];
 
     if (input.accountNumber) {
+      const accNoKey = accountCacheKeys.byAccountNumber(input.accountNumber);
       tasks.push(
-        this.cache.del(accountCacheKeys.byAccountNumber(input.accountNumber)),
+        options ? this.cache.del(accNoKey, options) : this.cache.del(accNoKey),
       );
     }
 
     if (input.userId) {
+      const listPattern = accountCacheKeys.userListPattern(input.userId);
       tasks.push(
-        this.cache.delByPattern(accountCacheKeys.userListPattern(input.userId)),
+        options
+          ? this.cache.delByPattern(listPattern, options)
+          : this.cache.delByPattern(listPattern),
       );
     }
 
     await Promise.all(tasks);
   }
 
-  async invalidateUserLists(userId: string): Promise<void> {
-    await this.cache.delByPattern(accountCacheKeys.userListPattern(userId));
+  async invalidateUserLists(
+    userId: string,
+    options?: AccountCacheInvalidateOptions,
+  ): Promise<void> {
+    const pattern = accountCacheKeys.userListPattern(userId);
+    if (options) {
+      await this.cache.delByPattern(pattern, options);
+      return;
+    }
+    await this.cache.delByPattern(pattern);
   }
 }

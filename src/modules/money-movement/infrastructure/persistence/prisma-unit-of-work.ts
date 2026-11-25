@@ -1,10 +1,12 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import {
+  ACCOUNT_EVENTS,
+  type AccountBalanceChangedEventPayload,
+  type AccountIdentityPayload,
+} from "@src/common/events";
+import { OutboxService } from "@src/infrastructure/outbox";
 import { PrismaService } from "@src/infrastructure/prisma";
-import type {
-  AccountCachePort,
-  InvalidateAccountCacheInput,
-} from "@src/modules/accounts/application/ports/account-cache.port";
 import {
   AccountSnapshot,
   CreateTransactionEntryInput,
@@ -29,37 +31,89 @@ interface RawAccountLockRow {
 export class PrismaUnitOfWork implements UnitOfWorkPort {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly accountCache?: AccountCachePort,
+    @Optional() private readonly outbox?: OutboxService,
   ) {}
 
   async execute<T>(
     work: (ctx: MoneyMovementTransactionContext) => Promise<T>,
   ): Promise<T> {
-    const knownAccounts = new Map<string, InvalidateAccountCacheInput>();
+    const knownAccounts = new Map<string, AccountIdentityPayload>();
     const touchedAccountIds = new Set<string>();
 
-    const result = await this.prisma.$transaction(async (tx) => {
+    const { data, outboxEvent } = await this.prisma.$transaction(async (tx) => {
       const ctx = this.buildContext(tx, knownAccounts, touchedAccountIds);
-      return work(ctx);
+      const result = await work(ctx);
+
+      if (touchedAccountIds.size === 0) {
+        return { data: result, outboxEvent: null };
+      }
+
+      const accounts = await this.resolveTouchedAccounts(
+        tx,
+        touchedAccountIds,
+        knownAccounts,
+      );
+
+      const eventRecord =
+        await OutboxService.recordInTransaction<AccountBalanceChangedEventPayload>(
+          tx,
+          {
+            aggregateType: "BankAccount",
+            aggregateId: accounts[0].accountId,
+            eventType: ACCOUNT_EVENTS.BALANCE_CHANGED,
+            payload: { accounts },
+          },
+        );
+
+      return { data: result, outboxEvent: eventRecord };
     });
 
-    // Chỉ xóa cache SAU KHI transaction đã commit thành công trên PostgreSQL
-    if (this.accountCache && touchedAccountIds.size > 0) {
-      await Promise.all(
-        Array.from(touchedAccountIds).map((accountId) =>
-          this.accountCache!.invalidateAccount(
-            knownAccounts.get(accountId) ?? { id: accountId },
-          ),
-        ),
-      );
+    if (outboxEvent && this.outbox) {
+      await this.outbox.dispatchCommitted([outboxEvent]);
     }
 
-    return result;
+    return data;
+  }
+
+  private async resolveTouchedAccounts(
+    tx: PrismaTx,
+    touchedAccountIds: Set<string>,
+    knownAccounts: Map<string, AccountIdentityPayload>,
+  ): Promise<AccountIdentityPayload[]> {
+    const missingIds = Array.from(touchedAccountIds).filter(
+      (id) => !knownAccounts.has(id),
+    );
+
+    if (
+      missingIds.length > 0 &&
+      typeof tx.bankAccount?.findMany === "function"
+    ) {
+      const rows = await tx.bankAccount.findMany({
+        where: { id: { in: missingIds } },
+        select: { id: true, userId: true, accountNumber: true },
+      });
+      for (const row of rows) {
+        knownAccounts.set(row.id, {
+          accountId: row.id,
+          userId: row.userId,
+          accountNumber: row.accountNumber,
+        });
+      }
+    }
+
+    return Array.from(touchedAccountIds).map(
+      (accountId) =>
+        knownAccounts.get(accountId) ?? {
+          accountId,
+          userId: "",
+          accountNumber: "",
+        },
+    );
   }
 
   private buildContext(
     tx: PrismaTx,
-    knownAccounts: Map<string, InvalidateAccountCacheInput>,
+    knownAccounts: Map<string, AccountIdentityPayload>,
     touchedAccountIds: Set<string>,
   ): MoneyMovementTransactionContext {
     return {
@@ -83,7 +137,7 @@ export class PrismaUnitOfWork implements UnitOfWorkPort {
           const row = rows[0] ?? null;
           if (row) {
             knownAccounts.set(row.id, {
-              id: row.id,
+              accountId: row.id,
               userId: row.userId,
               accountNumber: row.accountNumber,
             });
@@ -106,7 +160,7 @@ export class PrismaUnitOfWork implements UnitOfWorkPort {
           });
           if (!acc) return null;
           knownAccounts.set(acc.id, {
-            id: acc.id,
+            accountId: acc.id,
             userId: acc.userId,
             accountNumber: acc.accountNumber,
           });

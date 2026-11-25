@@ -1,36 +1,116 @@
-import { Inject, Injectable, OnModuleDestroy, Logger } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigType } from '@nestjs/config';
 import Redis from 'ioredis';
 import { LRUCache } from 'lru-cache';
 import redisConfig from '@src/common/config/redis.config';
 
+export const CACHE_INVALIDATION_CHANNEL = 'sa_bank:cache:l1:invalidate';
+
+export interface CacheInvalidateOptions {
+  readonly throwOnError?: boolean;
+}
+
+export interface CacheInvalidationMessage {
+  readonly originId: string;
+  readonly type: 'key' | 'pattern';
+  readonly target: string;
+}
+
+const DEFAULT_SCAN_COUNT = 100;
+
 @Injectable()
 export class MultiLevelCacheService implements OnModuleDestroy {
   private readonly logger = new Logger(MultiLevelCacheService.name);
+  private readonly instanceId = randomUUID();
   private readonly redisClient: Redis;
+  private readonly redisSubscriber: Redis;
   private readonly l1Cache: LRUCache<string, string>;
 
   constructor(
     @Inject(redisConfig.KEY)
     private readonly config: ConfigType<typeof redisConfig>,
   ) {
-    // 1. Tầng L1: In-Memory LRU Cache (RAM Node.js)
+    // 1. Tầng L1: In-Memory LRU Cache (RAM Node.js cục bộ từng instance)
     this.l1Cache = new LRUCache<string, string>({
       max: 1000, // Tối đa 1000 keys
       ttl: 15 * 1000, // TTL mặc định L1: 15 giây
     });
 
-    // 2. Tầng L2: Redis Cache
-    this.redisClient = new Redis({
+    // 2. Tầng L2: Redis Cache dùng chung
+    const redisOptions = {
       host: this.config.host,
       port: this.config.port,
       lazyConnect: true,
       maxRetriesPerRequest: 2,
+    };
+
+    this.redisClient = new Redis(redisOptions);
+    this.redisClient.on('error', (err) => {
+      this.logger.debug(`Redis client error: ${err.message}`);
+    });
+
+    // 3. Kênh Redis Pub/Sub chuyên biệt để đồng bộ xóa L1 giữa nhiều instance Node.js
+    this.redisSubscriber =
+      typeof this.redisClient.duplicate === 'function'
+        ? this.redisClient.duplicate(redisOptions)
+        : new Redis(redisOptions);
+
+    this.redisSubscriber.on('error', (err) => {
+      this.logger.debug(`Redis subscriber error: ${err.message}`);
+    });
+    this.redisSubscriber.on('message', (channel: string, message: string) => {
+      this.handleInvalidationMessage(channel, message);
     });
 
     this.redisClient.connect().catch((err) => {
-      this.logger.warn(`Redis connection failed: ${err.message}. Running degraded with L1 only.`);
+      this.logger.warn(
+        `Redis connection failed: ${err.message}. Running degraded with L1 only.`,
+      );
     });
+
+    this.initSubscriber().catch((err) => {
+      this.logger.warn(
+        `Redis Pub/Sub subscriber failed: ${err.message}. Cross-instance L1 sync degraded.`,
+      );
+    });
+  }
+
+  getInstanceId(): string {
+    return this.instanceId;
+  }
+
+  private async initSubscriber(): Promise<void> {
+    await this.redisSubscriber.connect();
+    await this.redisSubscriber.subscribe(CACHE_INVALIDATION_CHANNEL);
+  }
+
+  /**
+   * Nhận thông điệp Pub/Sub từ các instance khác để xóa L1 RAM cục bộ tức thì.
+   */
+  handleInvalidationMessage(channel: string, rawMessage: string): void {
+    if (channel !== CACHE_INVALIDATION_CHANNEL) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(rawMessage) as Partial<CacheInvalidationMessage>;
+      if (!parsed || typeof parsed.target !== 'string') {
+        return;
+      }
+      // Bỏ qua thông điệp do chính instance này vừa phát đi
+      if (parsed.originId === this.instanceId) {
+        return;
+      }
+
+      if (parsed.type === 'key') {
+        this.l1Cache.delete(parsed.target);
+      } else if (parsed.type === 'pattern') {
+        this.evictL1ByPattern(parsed.target);
+      }
+    } catch (error) {
+      this.logger.warn(`Invalid cache invalidation message ignored: ${error}`);
+    }
   }
 
   async get<T>(key: string): Promise<T | null> {
@@ -55,11 +135,13 @@ export class MultiLevelCacheService implements OnModuleDestroy {
     return null;
   }
 
-  async set(key: string, value: any, ttlSeconds: number = 60): Promise<void> {
+  async set(key: string, value: unknown, ttlSeconds: number = 60): Promise<void> {
     const serialized = JSON.stringify(value);
 
     // Ghi vào L1
-    this.l1Cache.set(key, serialized, { ttl: Math.min(ttlSeconds, 15) * 1000 });
+    this.l1Cache.set(key, serialized, {
+      ttl: Math.min(ttlSeconds, 15) * 1000,
+    });
 
     // Ghi vào L2
     try {
@@ -69,32 +151,76 @@ export class MultiLevelCacheService implements OnModuleDestroy {
     }
   }
 
-  async del(key: string): Promise<void> {
+  async del(key: string, options?: CacheInvalidateOptions): Promise<void> {
     this.l1Cache.delete(key);
     try {
       await this.redisClient.del(key);
+      await this.publishInvalidation('key', key);
     } catch (error) {
       this.logger.error(`Redis DEL error for key ${key}: ${error}`);
+      if (options?.throwOnError) {
+        throw error;
+      }
     }
   }
 
-  async delByPattern(pattern: string): Promise<void> {
-    // Xóa trong L1
+  async delByPattern(
+    pattern: string,
+    options?: CacheInvalidateOptions,
+  ): Promise<void> {
+    // Xóa trong L1 của instance hiện tại
+    this.evictL1ByPattern(pattern);
+
+    // Xóa trong L2 bằng con trỏ SCAN + UNLINK (không gây block luồng đơn Redis như KEYS *)
+    try {
+      await this.scanAndUnlink(pattern);
+      await this.publishInvalidation('pattern', pattern);
+    } catch (error) {
+      this.logger.error(`Redis DEL by pattern error: ${error}`);
+      if (options?.throwOnError) {
+        throw error;
+      }
+    }
+  }
+
+  private evictL1ByPattern(pattern: string): void {
     for (const key of this.l1Cache.keys()) {
       if (this.matchPattern(key, pattern)) {
         this.l1Cache.delete(key);
       }
     }
+  }
 
-    // Xóa trong L2
-    try {
-      const keys = await this.redisClient.keys(pattern);
+  private async scanAndUnlink(pattern: string): Promise<void> {
+    let cursor = '0';
+    do {
+      const [nextCursor, keys] = await this.redisClient.scan(
+        cursor,
+        'MATCH',
+        pattern,
+        'COUNT',
+        DEFAULT_SCAN_COUNT,
+      );
+      cursor = nextCursor;
       if (keys.length > 0) {
-        await this.redisClient.del(...keys);
+        await this.redisClient.unlink(...keys);
       }
-    } catch (error) {
-      this.logger.error(`Redis DEL by pattern error: ${error}`);
-    }
+    } while (cursor !== '0');
+  }
+
+  private async publishInvalidation(
+    type: 'key' | 'pattern',
+    target: string,
+  ): Promise<void> {
+    const message: CacheInvalidationMessage = {
+      originId: this.instanceId,
+      type,
+      target,
+    };
+    await this.redisClient.publish(
+      CACHE_INVALIDATION_CHANNEL,
+      JSON.stringify(message),
+    );
   }
 
   private matchPattern(key: string, pattern: string): boolean {
@@ -119,6 +245,7 @@ export class MultiLevelCacheService implements OnModuleDestroy {
     }
     return true;
   }
+
   async ping(timeoutMs = 1500): Promise<{ ok: boolean; latencyMs: number }> {
     const start = performance.now();
     let timer: NodeJS.Timeout | null = null;
@@ -144,7 +271,23 @@ export class MultiLevelCacheService implements OnModuleDestroy {
     }
   }
 
-  async onModuleDestroy() {
-    await this.redisClient.quit();
+  async onModuleDestroy(): Promise<void> {
+    await Promise.all([
+      this.safeCloseClient(this.redisSubscriber),
+      this.safeCloseClient(this.redisClient),
+    ]);
+  }
+
+  private async safeCloseClient(client: Redis | undefined): Promise<void> {
+    if (!client) return;
+    if (client.status === 'ready' || client.status === 'connect') {
+      await client.quit().catch(() => {
+        client.disconnect();
+      });
+      return;
+    }
+    if (typeof client.disconnect === 'function') {
+      client.disconnect();
+    }
   }
 }

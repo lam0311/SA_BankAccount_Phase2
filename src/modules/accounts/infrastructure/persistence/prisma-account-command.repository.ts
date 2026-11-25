@@ -1,10 +1,16 @@
 import { randomInt } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import {
   Prisma,
   type BankAccount as PrismaBankAccount,
 } from '@prisma/client';
 import { Money } from '@src/common/domain/value-objects/money.value-object';
+import {
+  ACCOUNT_EVENTS,
+  type AccountClosedEventPayload,
+  type AccountOpenedEventPayload,
+} from '@src/common/events';
+import { OutboxService } from '@src/infrastructure/outbox';
 import { PrismaService } from '@src/infrastructure/prisma/prisma.service';
 
 import type {
@@ -42,7 +48,10 @@ function isAccountNumberConflict(error: unknown): boolean {
 export class PrismaAccountCommandRepository
   implements AccountCommandRepositoryPort
 {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly outbox?: OutboxService,
+  ) {}
 
   async createWithOpeningDeposit(
     input: CreateAccountInput,
@@ -53,34 +62,60 @@ export class PrismaAccountCommandRepository
       const accountNumber = generateAccountNumber();
 
       try {
-        return await this.prisma.$transaction(async (tx) => {
-          const record = await tx.bankAccount.create({
-            data: {
-              user: { connect: { id: input.userId } },
-              accountNumber,
-              accountName: input.accountName,
-              accountType: input.accountType,
-              currentBalance: amount,
-              currency: 'VND',
-              status: 'ACTIVE',
-            },
-          });
-
-          if (input.initialDeposit.isPositive()) {
-            await tx.financialTransaction.create({
+        const { account, outboxEvent } = await this.prisma.$transaction(
+          async (tx) => {
+            const record = await tx.bankAccount.create({
               data: {
-                account: { connect: { id: record.id } },
-                transactionType: 'CREDIT',
-                referenceType: 'OPENING_DEPOSIT',
-                amount,
-                balanceAfter: amount,
-                status: 'COMPLETED',
+                user: { connect: { id: input.userId } },
+                accountNumber,
+                accountName: input.accountName,
+                accountType: input.accountType,
+                currentBalance: amount,
+                currency: 'VND',
+                status: 'ACTIVE',
               },
             });
-          }
 
-          return this.toDomain(record);
-        });
+            if (input.initialDeposit.isPositive()) {
+              await tx.financialTransaction.create({
+                data: {
+                  account: { connect: { id: record.id } },
+                  transactionType: 'CREDIT',
+                  referenceType: 'OPENING_DEPOSIT',
+                  amount,
+                  balanceAfter: amount,
+                  status: 'COMPLETED',
+                },
+              });
+            }
+
+            const eventRecord =
+              await OutboxService.recordInTransaction<AccountOpenedEventPayload>(
+                tx,
+                {
+                  aggregateType: 'BankAccount',
+                  aggregateId: record.id,
+                  eventType: ACCOUNT_EVENTS.OPENED,
+                  payload: {
+                    accountId: record.id,
+                    userId: record.userId,
+                    accountNumber: record.accountNumber,
+                  },
+                },
+              );
+
+            return {
+              account: this.toDomain(record),
+              outboxEvent: eventRecord,
+            };
+          },
+        );
+
+        if (outboxEvent && this.outbox) {
+          await this.outbox.dispatchCommitted([outboxEvent]);
+        }
+
+        return account;
       } catch (error) {
         if (
           isAccountNumberConflict(error) &&
@@ -105,20 +140,61 @@ export class PrismaAccountCommandRepository
   }
 
   async closeIfZeroBalance(id: string, userId: string): Promise<boolean> {
-    const result = await this.prisma.bankAccount.updateMany({
-      where: {
-        id,
-        userId,
-        status: 'ACTIVE',
-        currentBalance: 0,
-      },
-      data: {
-        status: 'CLOSED',
-        closedAt: new Date(),
-      },
-    });
+    const { closed, outboxEvent } = await this.prisma.$transaction(
+      async (tx) => {
+        const result = await tx.bankAccount.updateMany({
+          where: {
+            id,
+            userId,
+            status: 'ACTIVE',
+            currentBalance: 0,
+          },
+          data: {
+            status: 'CLOSED',
+            closedAt: new Date(),
+          },
+        });
 
-    return result.count === 1;
+        if (result.count !== 1) {
+          return { closed: false, outboxEvent: null };
+        }
+
+        const closedRow = await tx.bankAccount.findUniqueOrThrow({
+          where: { id },
+          select: {
+            id: true,
+            userId: true,
+            accountNumber: true,
+          },
+        });
+
+        const eventRecord =
+          await OutboxService.recordInTransaction<AccountClosedEventPayload>(
+            tx,
+            {
+              aggregateType: 'BankAccount',
+              aggregateId: closedRow.id,
+              eventType: ACCOUNT_EVENTS.CLOSED,
+              payload: {
+                accountId: closedRow.id,
+                userId: closedRow.userId,
+                accountNumber: closedRow.accountNumber,
+              },
+            },
+          );
+
+        return {
+          closed: true,
+          outboxEvent: eventRecord,
+        };
+      },
+    );
+
+    if (closed && outboxEvent && this.outbox) {
+      await this.outbox.dispatchCommitted([outboxEvent]);
+    }
+
+    return closed;
   }
 
   private toDomain(record: PrismaBankAccount): BankAccount {

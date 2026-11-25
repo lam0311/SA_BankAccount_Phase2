@@ -1,48 +1,39 @@
 import { Money } from '@src/common/domain/value-objects/money.value-object';
 import { CloseAccountHandler } from '@src/modules/accounts/application/commands/close-account.command';
 import {
-  fakeAccountCache,
   fakeAccountCommandRepository,
   makeAccount,
 } from '../../helpers/fake-account-repository';
 
 describe('CloseAccountHandler (CQRS Command)', () => {
-  test('chủ tài khoản đóng được account có số dư 0 và xóa đầy đủ cache (id, userId, accountNumber)', async () => {
+  test('chủ tài khoản đóng được account có số dư 0 (sự kiện xóa cache do Command Repo + Outbox phát)', async () => {
     const commandRepo = fakeAccountCommandRepository();
-    const cache = fakeAccountCache();
     const account = makeAccount();
     commandRepo.findById.mockResolvedValue(account);
     commandRepo.closeIfZeroBalance.mockResolvedValue(true);
 
     await expect(
-      new CloseAccountHandler(commandRepo, cache).execute('user-A', account.id),
+      new CloseAccountHandler(commandRepo).execute('user-A', account.id),
     ).resolves.toBeUndefined();
 
     expect(commandRepo.closeIfZeroBalance).toHaveBeenCalledWith(
       account.id,
       'user-A',
     );
-    expect(cache.invalidateAccount).toHaveBeenCalledWith({
-      id: account.id,
-      userId: 'user-A',
-      accountNumber: account.accountNumber,
-    });
   });
 
   test('account không tồn tại trả 404', async () => {
     const commandRepo = fakeAccountCommandRepository();
-    const cache = fakeAccountCache();
     commandRepo.findById.mockResolvedValue(null);
 
     await expect(
-      new CloseAccountHandler(commandRepo, cache).execute('user-A', 'missing-id'),
+      new CloseAccountHandler(commandRepo).execute('user-A', 'missing-id'),
     ).rejects.toMatchObject({
       errorCode: 'ACCOUNT_NOT_FOUND',
       httpStatus: 404,
     });
 
     expect(commandRepo.closeIfZeroBalance).not.toHaveBeenCalled();
-    expect(cache.invalidateAccount).not.toHaveBeenCalled();
   });
 
   test('user A không đóng được account của B', async () => {
@@ -94,7 +85,6 @@ describe('CloseAccountHandler (CQRS Command)', () => {
 
   test('nếu số dư đổi sau lần đọc đầu, đọc lại trực tiếp từ Command Repo (Primary DB) và trả đúng 409', async () => {
     const commandRepo = fakeAccountCommandRepository();
-    const cache = fakeAccountCache();
     const account = makeAccount();
 
     commandRepo.findById
@@ -107,12 +97,10 @@ describe('CloseAccountHandler (CQRS Command)', () => {
     commandRepo.closeIfZeroBalance.mockResolvedValue(false);
 
     await expect(
-      new CloseAccountHandler(commandRepo, cache).execute('user-A', account.id),
+      new CloseAccountHandler(commandRepo).execute('user-A', account.id),
     ).rejects.toMatchObject({
       errorCode: 'ACCOUNT_HAS_BALANCE',
       httpStatus: 409,
     });
-
-    expect(cache.invalidateAccount).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import { ConfigModule } from "@nestjs/config";
 import { APP_GUARD } from "@nestjs/core";
 import { PrismaModule } from "@src/infrastructure/prisma";
 import { CacheModule } from "@src/infrastructure/cache/cache.module";
+import { OutboxModule } from "@src/infrastructure/outbox";
 import { IdentityModule } from "@src/modules/identity/identity.module";
 import { AccountsModule } from "@src/modules/accounts/accounts.module";
 import { MoneyMovementModule } from "@src/modules/money-movement/money-movement.module";
@@ -31,6 +32,7 @@ import {
     ObservabilityModule,
     CacheModule,
     PrismaModule,
+    OutboxModule,
     IdentityModule,
     AccountsModule,
     MoneyMovementModule,

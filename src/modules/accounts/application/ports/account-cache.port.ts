@@ -6,7 +6,17 @@ export interface InvalidateAccountCacheInput {
   readonly accountNumber?: string;
 }
 
+export interface AccountCacheInvalidateOptions {
+  readonly throwOnError?: boolean;
+}
+
 export interface AccountCachePort {
-  invalidateAccount(input: InvalidateAccountCacheInput): Promise<void>;
-  invalidateUserLists(userId: string): Promise<void>;
+  invalidateAccount(
+    input: InvalidateAccountCacheInput,
+    options?: AccountCacheInvalidateOptions,
+  ): Promise<void>;
+  invalidateUserLists(
+    userId: string,
+    options?: AccountCacheInvalidateOptions,
+  ): Promise<void>;
 }

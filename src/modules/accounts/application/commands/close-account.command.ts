@@ -1,5 +1,4 @@
 import { Money } from '@src/common/domain/value-objects/money.value-object';
-import type { AccountCachePort } from '../ports/account-cache.port';
 import type { AccountCommandRepositoryPort } from '../ports/account-command.repository.port';
 import { AccountHasBalanceError } from '../../domain/errors/account-has-balance.error';
 import { AccountNotFoundError } from '../../domain/errors/account-not-found.error';
@@ -10,10 +9,7 @@ export interface CloseAccountCommand {
 }
 
 export class CloseAccountHandler {
-  constructor(
-    private readonly commandRepo: AccountCommandRepositoryPort,
-    private readonly accountCache?: AccountCachePort,
-  ) {}
+  constructor(private readonly commandRepo: AccountCommandRepositoryPort) {}
 
   async execute(currentUserId: string, accountId: string): Promise<void> {
     // Luôn đọc trực tiếp từ Primary DB qua Command Repository (không qua Cache)
@@ -38,11 +34,6 @@ export class CloseAccountHandler {
     );
 
     if (closed) {
-      await this.accountCache?.invalidateAccount({
-        id: account.id,
-        userId: account.userId,
-        accountNumber: account.accountNumber,
-      });
       return;
     }
 
@@ -55,11 +46,6 @@ export class CloseAccountHandler {
     }
 
     if (latest.status === 'CLOSED') {
-      await this.accountCache?.invalidateAccount({
-        id: latest.id,
-        userId: latest.userId,
-        accountNumber: latest.accountNumber,
-      });
       return;
     }
 

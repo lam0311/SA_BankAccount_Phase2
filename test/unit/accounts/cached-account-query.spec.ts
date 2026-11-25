@@ -1,4 +1,5 @@
 import { Money } from '@src/common/domain/value-objects/money.value-object';
+import { ACCOUNT_EVENTS } from '@src/common/events';
 import { Paginated } from '@src/common/http/interceptors/response-envelope.interceptor';
 import { OpenAccountHandler } from '@src/modules/accounts/application/commands/open-account.command';
 import { CloseAccountHandler } from '@src/modules/accounts/application/commands/close-account.command';
@@ -10,7 +11,6 @@ import { CachedAccountQueryRepository } from '@src/modules/accounts/infrastructu
 import { AccountsController } from '@src/modules/accounts/presentation/http/accounts.controller';
 import { PrismaUnitOfWork } from '@src/modules/money-movement/infrastructure/persistence/prisma-unit-of-work';
 import {
-  fakeAccountCache,
   fakeAccountCommandRepository,
   fakeAccountQueryRepository,
   makeAccount,
@@ -97,7 +97,7 @@ describe('CQRS Query Cache, Invalidator & Controller Contract', () => {
     });
   });
 
-  describe('AccountCacheInvalidator & PrismaUnitOfWork cache sync', () => {
+  describe('AccountCacheInvalidator & PrismaUnitOfWork Outbox event sync', () => {
     test('invalidateAccount xóa đủ cả 3 nhóm key (id, acc_no, user list)', async () => {
       const cache = {
         del: jest.fn().mockResolvedValue(undefined),
@@ -116,8 +116,24 @@ describe('CQRS Query Cache, Invalidator & Controller Contract', () => {
       expect(cache.delByPattern).toHaveBeenCalledWith('accounts:user:user-A:*');
     });
 
-    test('PrismaUnitOfWork chỉ xóa cache SAU KHI transaction commit thành công, không xóa khi rollback', async () => {
-      const accountCache = fakeAccountCache();
+    test('PrismaUnitOfWork ghi outbox_events trong cùng transaction và chỉ dispatch sau khi commit, không dispatch khi rollback', async () => {
+      const createdOutboxRow = {
+        id: 'evt-1',
+        aggregateType: 'BankAccount',
+        aggregateId: 'acc-1',
+        eventType: ACCOUNT_EVENTS.BALANCE_CHANGED,
+        payload: {
+          accounts: [
+            {
+              accountId: 'acc-1',
+              userId: 'user-A',
+              accountNumber: '001234567890',
+            },
+          ],
+        },
+        createdAt: new Date('2026-11-25T05:00:00.000Z'),
+      };
+
       const mockTx = {
         $queryRaw: jest.fn().mockResolvedValue([
           {
@@ -130,27 +146,47 @@ describe('CQRS Query Cache, Invalidator & Controller Contract', () => {
         ]),
         bankAccount: {
           update: jest.fn().mockResolvedValue({}),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        outboxEvent: {
+          create: jest.fn().mockResolvedValue(createdOutboxRow),
         },
       };
       const mockPrisma = {
         $transaction: jest.fn((cb: any) => cb(mockTx)),
       };
+      const mockOutbox = {
+        dispatchCommitted: jest.fn().mockResolvedValue(undefined),
+      };
 
-      const uow = new PrismaUnitOfWork(mockPrisma as any, accountCache);
+      const uow = new PrismaUnitOfWork(mockPrisma as any, mockOutbox as any);
 
-      // 1. Thành công -> xóa cache
+      // 1. Thành công -> ghi outbox_events trong tx và dispatch ngay sau commit
       await uow.execute(async (ctx) => {
         await ctx.accounts.lockForUpdate('acc-1');
         await ctx.accounts.updateBalance('acc-1', '200000');
       });
-      expect(accountCache.invalidateAccount).toHaveBeenCalledWith({
-        id: 'acc-1',
-        userId: 'user-A',
-        accountNumber: '001234567890',
+      expect(mockTx.outboxEvent.create).toHaveBeenCalledWith({
+        data: {
+          aggregateType: 'BankAccount',
+          aggregateId: 'acc-1',
+          eventType: ACCOUNT_EVENTS.BALANCE_CHANGED,
+          payload: {
+            accounts: [
+              {
+                accountId: 'acc-1',
+                userId: 'user-A',
+                accountNumber: '001234567890',
+              },
+            ],
+          },
+        },
       });
+      expect(mockOutbox.dispatchCommitted).toHaveBeenCalledTimes(1);
 
-      // 2. Rollback (throw giữa chừng) -> KHÔNG xóa cache
-      accountCache.invalidateAccount.mockClear();
+      // 2. Rollback (throw giữa chừng) -> KHÔNG dispatch sự kiện ra ngoài
+      mockOutbox.dispatchCommitted.mockClear();
+      mockTx.outboxEvent.create.mockClear();
       await expect(
         uow.execute(async (ctx) => {
           await ctx.accounts.lockForUpdate('acc-1');
@@ -158,7 +194,8 @@ describe('CQRS Query Cache, Invalidator & Controller Contract', () => {
           throw new Error('DB failure before commit');
         }),
       ).rejects.toThrow('DB failure before commit');
-      expect(accountCache.invalidateAccount).not.toHaveBeenCalled();
+      expect(mockTx.outboxEvent.create).not.toHaveBeenCalled();
+      expect(mockOutbox.dispatchCommitted).not.toHaveBeenCalled();
     });
   });
 
@@ -166,13 +203,12 @@ describe('CQRS Query Cache, Invalidator & Controller Contract', () => {
     test('AccountsController bảo toàn 100% cấu trúc response của cả Command và Query (ẩn userId nội bộ)', async () => {
       const commandRepo = fakeAccountCommandRepository();
       const queryRepo = fakeAccountQueryRepository();
-      const cache = fakeAccountCache();
 
       const controller = new AccountsController(
-        new OpenAccountHandler(commandRepo, cache),
+        new OpenAccountHandler(commandRepo),
         new ListAccountsQueryHandler(queryRepo),
         new GetAccountQueryHandler(queryRepo),
-        new CloseAccountHandler(commandRepo, cache),
+        new CloseAccountHandler(commandRepo),
       );
 
       const domainAcc = makeAccount({
