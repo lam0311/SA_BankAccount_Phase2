@@ -1,6 +1,6 @@
 // src/modules/identity/presentation/http/dto/login.dto.ts
-import { ApiProperty } from "@nestjs/swagger";
-import { IsEmail, IsNotEmpty, MaxLength } from "class-validator";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { IsEmail, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
 
 export class LoginDto {
   @ApiProperty({ format: "email", maxLength: 254, example: "customer@example.com" })
@@ -14,3 +14,20 @@ export class LoginDto {
   // KHONG them regex/do dai o day - neu them, loi 400 "password sai dinh dang" se vo
   // tinh tiet lo password policy cho ke tan cong qua kenh login (khac kenh register).
 }
+
+// kiem tra refresh token co hay ko
+export class RefreshTokenDto {
+  @ApiProperty({ example: "family-id.token-id.random-hex" })
+  @IsString()
+  @IsNotEmpty()
+  refreshToken!: string;
+}
+
+// logout: thu hoi access token va refresh token
+export class LogoutDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  refreshToken?: string;
+}
+
