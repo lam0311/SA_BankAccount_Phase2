@@ -1,23 +1,27 @@
 import { Money } from '../../../../common/domain/value-objects/money.value-object';
 import { ValidationError } from '../../../../common/domain/errors/common.errors';
-import { 
-  UnitOfWorkPort, 
+import type {
+  BalanceReservationPort,
+  WithdrawSettlementPort,
+} from '../ports/balance-reservation.port';
+import {
+  UnitOfWorkPort,
   MoneyMovementTransactionContext,
-  TransferExecutionResult 
+  TransferExecutionResult
 } from '../ports/unit-of-work.port';
-import { 
-  AccountNotFoundError, 
-  AccountClosedError, 
-  InsufficientFundsError, 
-  SameSourceDestinationError 
+import {
+  AccountNotFoundError,
+  AccountClosedError,
+  InsufficientFundsError,
+  SameSourceDestinationError
 } from '../../domain/errors';
 
 export interface TransferMoneyCommand {
   sourceAccountId: string;
   destinationAccountNumber: string;
-  initiatedByUserId: string; 
+  initiatedByUserId: string;
   amount: string;
-  idempotencyKey: string;   
+  idempotencyKey: string;
   description?: string;
 }
 
@@ -26,10 +30,16 @@ const MAX_VND = 999_999_999_999_999_999n;
 export class TransferMoneyUseCase {
   constructor(
     private readonly unitOfWork: UnitOfWorkPort,
+    private readonly reservation?: BalanceReservationPort,
+    private readonly settlement?: WithdrawSettlementPort,
   ) {}
 
   async execute(command: TransferMoneyCommand): Promise<TransferExecutionResult> {
-    return this.unitOfWork.execute(async (ctx: MoneyMovementTransactionContext) => {
+    // xoa key tai khoan nguon va xa het lenh rut dang cho truoc khi chuyen khoan
+    await this.reservation?.invalidate(command.sourceAccountId);
+    await this.settlement?.flush();
+
+    const result = await this.unitOfWork.execute(async (ctx: MoneyMovementTransactionContext) => {
       const destSnapshot = await ctx.accounts.findByAccountNumber(command.destinationAccountNumber);
       if (!destSnapshot) {
         throw new AccountNotFoundError('Destination account not found');
@@ -39,7 +49,7 @@ export class TransferMoneyUseCase {
         throw new SameSourceDestinationError();
       }
 
-      const [firstId, secondId] = 
+      const [firstId, secondId] =
         command.sourceAccountId < destSnapshot.id
           ? [command.sourceAccountId, destSnapshot.id]
           : [destSnapshot.id, command.sourceAccountId];
@@ -51,7 +61,7 @@ export class TransferMoneyUseCase {
       const destAccount = firstId === command.sourceAccountId ? secondAccount : firstAccount;
 
       if (!sourceAccount || sourceAccount.userId !== command.initiatedByUserId) {
-        throw new AccountNotFoundError('Source account not found'); 
+        throw new AccountNotFoundError('Source account not found');
       }
       // Authorize ownership before returning a previous result. Account state
       // only gates new transfers, not replay of an already completed transfer.
@@ -77,7 +87,7 @@ export class TransferMoneyUseCase {
       const transferAmount = Money.fromString(command.amount, { allowZero: false });
 
       if (!sourceBalance.isGreaterThanOrEqual(transferAmount)) {
-        throw new InsufficientFundsError(); 
+        throw new InsufficientFundsError();
       }
 
       const newSourceBalance = sourceBalance.subtract(transferAmount).toDecimalString();
@@ -123,5 +133,13 @@ export class TransferMoneyUseCase {
 
       return { transfer: transferRecord, isReplay: false };
     });
+
+    // chuyen tien thanh cong thi xoa so du cu tren redis cua ca 2 tai khoan
+    if (!result.isReplay && this.reservation) {
+      await this.reservation.invalidate(result.transfer.sourceAccountId);
+      await this.reservation.invalidate(result.transfer.destinationAccountId);
+    }
+
+    return result;
   }
 }

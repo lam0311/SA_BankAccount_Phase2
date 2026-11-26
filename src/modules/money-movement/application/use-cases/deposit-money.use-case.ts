@@ -4,6 +4,10 @@ import {
   UnitOfWorkPort,
   TransactionExecutionResult,
 } from '../ports/unit-of-work.port';
+import type {
+  BalanceReservationPort,
+  WithdrawSettlementPort,
+} from '../ports/balance-reservation.port';
 import {
   AccountNotFoundError,
   AccountClosedError,
@@ -21,17 +25,25 @@ export interface DepositMoneyCommand {
 const MAX_VND = 999_999_999_999_999_999n;
 
 export class DepositMoneyUseCase {
-  constructor(private readonly unitOfWork: UnitOfWorkPort) {}
+  constructor(
+    private readonly unitOfWork: UnitOfWorkPort,
+    private readonly reservation?: BalanceReservationPort,
+    private readonly settlement?: WithdrawSettlementPort,
+  ) {}
 
   async execute(command: DepositMoneyCommand): Promise<TransactionExecutionResult> {
-    return this.unitOfWork.execute(async (ctx) => {
+    // xoa key tren redis va xa het lenh rut dang cho truoc khi nap tien vao db
+    await this.reservation?.invalidate(command.accountId);
+    await this.settlement?.flush();
+
+    const result = await this.unitOfWork.execute(async (ctx) => {
       const account = await ctx.accounts.lockForUpdate(command.accountId);
       if (!account || account.userId !== command.userId) {
         throw new AccountNotFoundError();
       }
 
       const depositMoney = Money.fromString(command.amount, { allowZero: false });
-      const normalizedDescription = command.description ?? null;
+      const description = command.description ?? null;
 
       if (command.idempotencyKey) {
         const existingTx = await ctx.transactions.findByAccountAndIdempotencyKey(
@@ -39,14 +51,12 @@ export class DepositMoneyUseCase {
           command.idempotencyKey,
         );
         if (existingTx) {
-          const isSamePayload =
+          const samePayload =
             existingTx.transactionType === 'CREDIT' &&
             Money.fromString(String(existingTx.amount)).equals(depositMoney) &&
-            (existingTx.description ?? null) === normalizedDescription;
+            (existingTx.description ?? null) === description;
 
-          if (!isSamePayload) {
-            throw new IdempotencyKeyReusedError();
-          }
+          if (!samePayload) throw new IdempotencyKeyReusedError();
           return { transaction: existingTx, isReplay: true };
         }
       }
@@ -65,17 +75,24 @@ export class DepositMoneyUseCase {
       const newBalance = newBalanceMoney.toDecimalString();
 
       await ctx.accounts.updateBalance(account.id, newBalance);
-      const transactionRecord = await ctx.transactions.create({
+      const transaction = await ctx.transactions.create({
         accountId: account.id,
         transactionType: 'CREDIT',
         referenceType: 'CASH_DEPOSIT',
         amount: command.amount,
         balanceAfter: newBalance,
-        description: normalizedDescription,
+        description,
         idempotencyKey: command.idempotencyKey ?? null,
       });
 
-      return { transaction: transactionRecord, isReplay: false };
+      return { transaction, isReplay: false };
     });
+
+    // nap tien thanh cong thi xoa so du cu tren redis de lan rut sau lay so du moi
+    if (!result.isReplay) {
+      await this.reservation?.invalidate(command.accountId);
+    }
+
+    return result;
   }
 }

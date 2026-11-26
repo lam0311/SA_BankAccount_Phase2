@@ -17,7 +17,14 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main"
+    "start:prod": "node dist/main",
+    "verify:cache": "node test/verify/cache.cjs",
+    "verify:ratelimit": "node test/verify/rate-limit.cjs",
+    "verify:idempotency": "node test/verify/idempotency.cjs",
+    "verify:auth": "node test/verify/auth-session.cjs",
+    "verify:reservation": "node test/verify/reservation.cjs",
+    "verify:settlement": "node test/verify/settlement.cjs",
+    "verify:all": "node test/verify/run-all.cjs"
   },
   "repository": {
     "type": "git",

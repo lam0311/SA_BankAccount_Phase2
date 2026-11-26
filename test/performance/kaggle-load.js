@@ -43,8 +43,15 @@ export default function () {
   } else if (workload === 'list') {
     response = http.get(`${base}/accounts?page=${protocol.fixture.list_page}&limit=${protocol.fixture.list_limit}`, params);
   } else {
+    const debitParams = {
+      ...params,
+      headers: {
+        ...params.headers,
+        'Idempotency-Key': `k6-debit-${__VU}-${__ITER}-${Date.now()}`,
+      },
+    };
     response = http.post(`${base}/accounts/${accountId}/transactions`,
-      JSON.stringify({ type: 'DEBIT', amount: protocol.fixture.debit_amount }), params);
+      JSON.stringify({ type: 'DEBIT', amount: protocol.fixture.debit_amount }), debitParams);
   }
   let body;
   try { body = response.json(); } catch (_) { body = null; }

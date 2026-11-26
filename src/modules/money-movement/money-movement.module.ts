@@ -10,8 +10,16 @@ import { TransferMoneyUseCase } from "./application/use-cases/transfer-money.use
 import { GetTransactionHistoryUseCase } from "./application/use-cases/get-transaction-history.use-case";
 import { UNIT_OF_WORK, UnitOfWorkPort } from "./application/ports/unit-of-work.port";
 import { TRANSACTION_QUERY, TransactionQueryPort } from "./application/ports/transaction-query.port";
+import {
+  BALANCE_RESERVATION,
+  WITHDRAW_SETTLEMENT,
+  type BalanceReservationPort,
+  type WithdrawSettlementPort,
+} from "./application/ports/balance-reservation.port";
 import { PrismaUnitOfWork } from "./infrastructure/persistence/prisma-unit-of-work";
 import { PrismaTransactionQuery } from "./infrastructure/persistence/prisma-transaction-query";
+import { RedisAtomicReservationService } from "./infrastructure/cache/redis-atomic-reservation.service";
+import { WithdrawSettlementWorker } from "./infrastructure/workers/withdraw-settlement.worker";
 
 @Module({
   imports: [PrismaModule],
@@ -20,6 +28,16 @@ import { PrismaTransactionQuery } from "./infrastructure/persistence/prisma-tran
     TransfersController,
   ],
   providers: [
+    RedisAtomicReservationService,
+    {
+      provide: BALANCE_RESERVATION,
+      useExisting: RedisAtomicReservationService,
+    },
+    WithdrawSettlementWorker,
+    {
+      provide: WITHDRAW_SETTLEMENT,
+      useExisting: WithdrawSettlementWorker,
+    },
     {
       provide: UNIT_OF_WORK,
       useFactory: (prisma: PrismaService, outbox: OutboxService) =>
@@ -32,18 +50,30 @@ import { PrismaTransactionQuery } from "./infrastructure/persistence/prisma-tran
     },
     {
       provide: DepositMoneyUseCase,
-      useFactory: (uow: UnitOfWorkPort) => new DepositMoneyUseCase(uow),
-      inject: [UNIT_OF_WORK],
+      useFactory: (
+        uow: UnitOfWorkPort,
+        reservation: BalanceReservationPort,
+        settlement: WithdrawSettlementPort,
+      ) => new DepositMoneyUseCase(uow, reservation, settlement),
+      inject: [UNIT_OF_WORK, BALANCE_RESERVATION, WITHDRAW_SETTLEMENT],
     },
     {
       provide: WithdrawMoneyUseCase,
-      useFactory: (uow: UnitOfWorkPort) => new WithdrawMoneyUseCase(uow),
-      inject: [UNIT_OF_WORK],
+      useFactory: (
+        uow: UnitOfWorkPort,
+        reservation: BalanceReservationPort,
+        settlement: WithdrawSettlementPort,
+      ) => new WithdrawMoneyUseCase(uow, reservation, settlement),
+      inject: [UNIT_OF_WORK, BALANCE_RESERVATION, WITHDRAW_SETTLEMENT],
     },
     {
       provide: TransferMoneyUseCase,
-      useFactory: (uow: UnitOfWorkPort) => new TransferMoneyUseCase(uow),
-      inject: [UNIT_OF_WORK],
+      useFactory: (
+        uow: UnitOfWorkPort,
+        reservation: BalanceReservationPort,
+        settlement: WithdrawSettlementPort,
+      ) => new TransferMoneyUseCase(uow, reservation, settlement),
+      inject: [UNIT_OF_WORK, BALANCE_RESERVATION, WITHDRAW_SETTLEMENT],
     },
     {
       provide: GetTransactionHistoryUseCase,
@@ -51,6 +81,6 @@ import { PrismaTransactionQuery } from "./infrastructure/persistence/prisma-tran
       inject: [TRANSACTION_QUERY],
     },
   ],
-  exports: [],
+  exports: [BALANCE_RESERVATION, WITHDRAW_SETTLEMENT],
 })
 export class MoneyMovementModule {}
