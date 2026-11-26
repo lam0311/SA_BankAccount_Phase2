@@ -135,6 +135,85 @@ describe('withdraw settlement worker va luong ghi nen', () => {
       await expect(worker.flush()).rejects.toThrow('db down');
       expect(requeue).toHaveBeenCalledWith(batch);
     });
+
+    it('xep hang tuan tu khi nhieu flush duoc goi dong thoi', async () => {
+      const batch: QueuedWithdrawalItem[] = [
+        {
+          id: 'tx-seq-1',
+          accountId: 'acc-1',
+          userId: 'user-1',
+          amount: '5000',
+          balanceAfter: '95000',
+          description: null,
+          idempotencyKey: 'k-seq-1',
+          createdAt: '2026-11-26T00:00:00.000Z',
+        },
+      ];
+
+      let releaseTx!: () => void;
+      const txGate = new Promise<void>((resolve) => {
+        releaseTx = resolve;
+      });
+      let inFlight = 0;
+      let maxConcurrent = 0;
+
+      const mockTx = {
+        bankAccount: {
+          update: jest.fn<AnyAsyncFn>().mockResolvedValue({
+            id: 'acc-1',
+            userId: 'user-1',
+            accountNumber: '100000000001',
+          }),
+        },
+        financialTransaction: {
+          createMany: jest.fn<AnyAsyncFn>().mockResolvedValue({ count: 1 }),
+        },
+        outboxEvent: {
+          create: jest.fn<AnyAsyncFn>().mockResolvedValue({
+            id: 'evt-seq-1',
+            aggregateType: 'BankAccount',
+            aggregateId: 'acc-1',
+            eventType: 'account.balance.changed',
+            payload: { accounts: [] },
+            createdAt: new Date(),
+          }),
+        },
+      };
+
+      const prisma = {
+        $transaction: jest.fn(async (cb: (tx: typeof mockTx) => Promise<unknown>) => {
+          inFlight += 1;
+          maxConcurrent = Math.max(maxConcurrent, inFlight);
+          await txGate;
+          try {
+            return await cb(mockTx);
+          } finally {
+            inFlight -= 1;
+          }
+        }),
+      } as unknown as PrismaService;
+
+      const reservation: BalanceReservationPort = {
+        seedAccount: jest.fn<BalanceReservationPort['seedAccount']>(),
+        syncAccount: jest.fn<BalanceReservationPort['syncAccount']>(),
+        reserveDebit: jest.fn<BalanceReservationPort['reserveDebit']>(),
+        releaseDebit: jest.fn<BalanceReservationPort['releaseDebit']>(),
+        markIdempotencyKey: jest.fn<BalanceReservationPort['markIdempotencyKey']>(),
+        invalidate: jest.fn<BalanceReservationPort['invalidate']>(),
+        popSettlementBatch: jest.fn<AnyAsyncFn>().mockResolvedValueOnce(batch).mockResolvedValue([]),
+        requeueSettlementBatch: jest.fn<AnyAsyncFn>(),
+      };
+
+      const worker = new WithdrawSettlementWorker(prisma, reservation);
+      const pending = Promise.all([worker.flush(), worker.flush(), worker.flush()]);
+      await Promise.resolve();
+      releaseTx();
+
+      const counts = await pending;
+      expect(counts).toEqual([1, 0, 0]);
+      expect(maxConcurrent).toBe(1);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('use case phoi hop voi worker', () => {

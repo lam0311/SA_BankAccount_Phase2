@@ -42,6 +42,7 @@ export class WithdrawSettlementWorker
   onModuleInit(): void {
     // cu moi 50ms tu dong kiem tra va ghi cac lenh rut dang cho xuong postgres
     this.timer = setInterval(() => {
+      if (this.activeFlush) return;
       void this.flush().catch((err) => {
         this.logger.error(`loi khi worker ghi so cai nen: ${(err as Error).message}`);
       });
@@ -61,16 +62,19 @@ export class WithdrawSettlementWorker
   }
 
   async flush(): Promise<number> {
-    // neu dang co mot dot flush chay thi doi xong roi kiem tra tiep
-    if (this.activeFlush) {
-      await this.activeFlush;
+    // doi tuan tu neu dang co dot ghi nen chay, tranh nhieu luong cung chay drainQueue
+    while (this.activeFlush) {
+      await this.activeFlush.catch(() => undefined);
     }
 
-    this.activeFlush = this.drainQueue();
+    const current = this.drainQueue();
+    this.activeFlush = current;
     try {
-      return await this.activeFlush;
+      return await current;
     } finally {
-      this.activeFlush = null;
+      if (this.activeFlush === current) {
+        this.activeFlush = null;
+      }
     }
   }
 
