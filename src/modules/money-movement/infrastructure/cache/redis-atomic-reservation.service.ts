@@ -59,6 +59,9 @@ if idemKey ~= '' then
 end
 
 local status = redis.call('HGET', accKey, 'status')
+if status == 'FROZEN' then
+  return { 'FROZEN', '0' }
+end
 if status ~= 'ACTIVE' then
   return { 'CLOSED', '0' }
 end

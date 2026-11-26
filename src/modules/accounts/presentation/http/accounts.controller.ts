@@ -25,6 +25,8 @@ import type { AccessTokenPayload } from '@src/common/security/ports/token-servic
 
 import { OpenAccountHandler } from '../../application/commands/open-account.command';
 import { CloseAccountHandler } from '../../application/commands/close-account.command';
+import { FreezeAccountHandler } from '../../application/commands/freeze-account.command';
+import { UnfreezeAccountHandler } from '../../application/commands/unfreeze-account.command';
 import type { AccountReadModel } from '../../application/queries/account.read-model';
 import { GetAccountQueryHandler } from '../../application/queries/get-account.query';
 import { ListAccountsQueryHandler } from '../../application/queries/list-accounts.query';
@@ -74,6 +76,8 @@ export class AccountsController {
     private readonly listAccounts: ListAccountsQueryHandler,
     private readonly getAccount: GetAccountQueryHandler,
     private readonly closeAccount: CloseAccountHandler,
+    private readonly freezeAccount: FreezeAccountHandler,
+    private readonly unfreezeAccount: UnfreezeAccountHandler,
   ) {}
 
   @ApiOperation({ summary: 'Mở tài khoản' })
@@ -137,5 +141,35 @@ export class AccountsController {
     @Param() params: AccountIdParamsDto,
   ): Promise<void> {
     await this.closeAccount.execute(user.sub, params.accountId);
+  }
+
+  @ApiOperation({ summary: 'Đóng băng tài khoản tạm thời' })
+  @ApiParam({ name: 'accountId', description: 'UUID v4 của tài khoản', format: 'uuid' })
+  @ApiResponse(successResponse(200, 'Đóng băng tài khoản thành công', accountResponseSchema))
+  @ApiResponse(errorResponse(404, 'ACCOUNT_NOT_FOUND: Không tồn tại hoặc không sở hữu'))
+  @ApiResponse(errorResponse(409, 'ACCOUNT_NOT_ACTIVE: Tài khoản đã đóng'))
+  @Post(':accountId/freeze')
+  @HttpCode(HttpStatus.OK)
+  async freeze(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param() params: AccountIdParamsDto,
+  ) {
+    const account = await this.freezeAccount.execute(user.sub, params.accountId);
+    return toCommandAccountResponse(account);
+  }
+
+  @ApiOperation({ summary: 'Mở khóa tài khoản đang đóng băng' })
+  @ApiParam({ name: 'accountId', description: 'UUID v4 của tài khoản', format: 'uuid' })
+  @ApiResponse(successResponse(200, 'Mở khóa tài khoản thành công', accountResponseSchema))
+  @ApiResponse(errorResponse(404, 'ACCOUNT_NOT_FOUND: Không tồn tại hoặc không sở hữu'))
+  @ApiResponse(errorResponse(409, 'ACCOUNT_NOT_ACTIVE: Tài khoản đã đóng'))
+  @Post(':accountId/unfreeze')
+  @HttpCode(HttpStatus.OK)
+  async unfreeze(
+    @CurrentUser() user: AccessTokenPayload,
+    @Param() params: AccountIdParamsDto,
+  ) {
+    const account = await this.unfreezeAccount.execute(user.sub, params.accountId);
+    return toCommandAccountResponse(account);
   }
 }

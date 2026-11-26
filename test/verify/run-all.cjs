@@ -8,6 +8,7 @@ const scripts = [
   'auth-session.cjs',
   'reservation.cjs',
   'settlement.cjs',
+  'risk-control.cjs',
 ];
 
 for (const file of scripts) {

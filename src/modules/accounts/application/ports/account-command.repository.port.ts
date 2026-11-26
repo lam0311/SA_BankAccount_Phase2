@@ -11,13 +11,14 @@ export interface CreateAccountInput {
   readonly initialDeposit: Money;
 }
 
-/**
- * Write-side Repository Port (CQRS Command).
- * Luôn thao tác trực tiếp trên Primary Database (không đọc qua Cache)
- * để đảm bảo Strong Consistency cho các ràng buộc mở/đóng tài khoản.
- */
 export interface AccountCommandRepositoryPort {
   createWithOpeningDeposit(input: CreateAccountInput): Promise<BankAccount>;
   findById(id: string): Promise<BankAccount | null>;
   closeIfZeroBalance(id: string, userId: string): Promise<boolean>;
+  updateStatus(
+    id: string,
+    userId: string,
+    fromStatus: 'ACTIVE' | 'FROZEN',
+    toStatus: 'ACTIVE' | 'FROZEN',
+  ): Promise<BankAccount | null>;
 }

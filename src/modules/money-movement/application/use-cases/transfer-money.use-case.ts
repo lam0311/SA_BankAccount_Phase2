@@ -4,6 +4,7 @@ import type {
   BalanceReservationPort,
   WithdrawSettlementPort,
 } from '../ports/balance-reservation.port';
+import type { RiskControlPort } from '../ports/risk-control.port';
 import {
   UnitOfWorkPort,
   MoneyMovementTransactionContext,
@@ -12,8 +13,11 @@ import {
 import {
   AccountNotFoundError,
   AccountClosedError,
+  AccountFrozenError,
   InsufficientFundsError,
-  SameSourceDestinationError
+  SameSourceDestinationError,
+  DailyLimitExceededError,
+  VelocityLimitExceededError,
 } from '../../domain/errors';
 
 export interface TransferMoneyCommand {
@@ -32,6 +36,7 @@ export class TransferMoneyUseCase {
     private readonly unitOfWork: UnitOfWorkPort,
     private readonly reservation?: BalanceReservationPort,
     private readonly settlement?: WithdrawSettlementPort,
+    private readonly riskControl?: RiskControlPort,
   ) {}
 
   async execute(command: TransferMoneyCommand): Promise<TransferExecutionResult> {
@@ -39,100 +44,134 @@ export class TransferMoneyUseCase {
     await this.reservation?.invalidate(command.sourceAccountId);
     await this.settlement?.flush();
 
-    const result = await this.unitOfWork.execute(async (ctx: MoneyMovementTransactionContext) => {
-      const destSnapshot = await ctx.accounts.findByAccountNumber(command.destinationAccountNumber);
-      if (!destSnapshot) {
-        throw new AccountNotFoundError('Destination account not found');
-      }
+    let riskMemberId: string | undefined;
+    let result: TransferExecutionResult;
 
-      if (destSnapshot.id === command.sourceAccountId) {
-        throw new SameSourceDestinationError();
-      }
+    try {
+      result = await this.unitOfWork.execute(async (ctx: MoneyMovementTransactionContext) => {
+        const destSnapshot = await ctx.accounts.findByAccountNumber(command.destinationAccountNumber);
+        if (!destSnapshot) {
+          throw new AccountNotFoundError('Destination account not found');
+        }
 
-      const [firstId, secondId] =
-        command.sourceAccountId < destSnapshot.id
-          ? [command.sourceAccountId, destSnapshot.id]
-          : [destSnapshot.id, command.sourceAccountId];
+        if (destSnapshot.id === command.sourceAccountId) {
+          throw new SameSourceDestinationError();
+        }
 
-      const firstAccount = await ctx.accounts.lockForUpdate(firstId);
-      const secondAccount = await ctx.accounts.lockForUpdate(secondId);
+        const [firstId, secondId] =
+          command.sourceAccountId < destSnapshot.id
+            ? [command.sourceAccountId, destSnapshot.id]
+            : [destSnapshot.id, command.sourceAccountId];
 
-      const sourceAccount = firstId === command.sourceAccountId ? firstAccount : secondAccount;
-      const destAccount = firstId === command.sourceAccountId ? secondAccount : firstAccount;
+        const firstAccount = await ctx.accounts.lockForUpdate(firstId);
+        const secondAccount = await ctx.accounts.lockForUpdate(secondId);
 
-      if (!sourceAccount || sourceAccount.userId !== command.initiatedByUserId) {
-        throw new AccountNotFoundError('Source account not found');
-      }
-      // Authorize ownership before returning a previous result. Account state
-      // only gates new transfers, not replay of an already completed transfer.
-      const existingTransfer = await ctx.transfers.findBySourceAndIdempotencyKey(
-        command.sourceAccountId,
-        command.idempotencyKey,
-      );
+        const sourceAccount = firstId === command.sourceAccountId ? firstAccount : secondAccount;
+        const destAccount = firstId === command.sourceAccountId ? secondAccount : firstAccount;
 
-      if (existingTransfer) {
-        return { transfer: existingTransfer, isReplay: true };
-      }
+        if (!sourceAccount || sourceAccount.userId !== command.initiatedByUserId) {
+          throw new AccountNotFoundError('Source account not found');
+        }
 
-      if (sourceAccount.status === 'CLOSED') {
-        throw new AccountClosedError('Source account is closed');
-      }
+        const existingTransfer = await ctx.transfers.findBySourceAndIdempotencyKey(
+          command.sourceAccountId,
+          command.idempotencyKey,
+        );
 
-      if (!destAccount || destAccount.status === 'CLOSED') {
-        throw new AccountNotFoundError('Destination account not found');
-      }
+        if (existingTransfer) {
+          return { transfer: existingTransfer, isReplay: true };
+        }
 
-      const sourceBalance = Money.fromString(sourceAccount.currentBalance);
-      const destBalance = Money.fromString(destAccount.currentBalance);
-      const transferAmount = Money.fromString(command.amount, { allowZero: false });
+        if (sourceAccount.status === 'CLOSED') {
+          throw new AccountClosedError('Source account is closed');
+        }
 
-      if (!sourceBalance.isGreaterThanOrEqual(transferAmount)) {
-        throw new InsufficientFundsError();
-      }
+        if (sourceAccount.status === 'FROZEN') {
+          throw new AccountFrozenError('Source account is frozen');
+        }
 
-      const newSourceBalance = sourceBalance.subtract(transferAmount).toDecimalString();
-      const newDestBalanceMoney = destBalance.add(transferAmount);
-      if (BigInt(newDestBalanceMoney.toDecimalString()) > MAX_VND) {
-        throw new ValidationError([
-          { field: 'amount', reason: 'amount_out_of_range' },
-        ]);
-      }
-      const newDestBalance = newDestBalanceMoney.toDecimalString();
+        if (!destAccount || destAccount.status === 'CLOSED') {
+          throw new AccountNotFoundError('Destination account not found');
+        }
 
-      await ctx.accounts.updateBalance(sourceAccount.id, newSourceBalance);
-      await ctx.accounts.updateBalance(destAccount.id, newDestBalance);
+        const sourceBalance = Money.fromString(sourceAccount.currentBalance);
+        const destBalance = Money.fromString(destAccount.currentBalance);
+        const transferAmount = Money.fromString(command.amount, { allowZero: false });
 
-      const transferRecord = await ctx.transfers.create({
-        sourceAccountId: sourceAccount.id,
-        destinationAccountId: destAccount.id,
-        initiatedByUserId: command.initiatedByUserId,
-        amount: command.amount,
-        idempotencyKey: command.idempotencyKey,
-        description: command.description ?? null,
+        if (!sourceBalance.isGreaterThanOrEqual(transferAmount)) {
+          throw new InsufficientFundsError();
+        }
+
+        const newSourceBalance = sourceBalance.subtract(transferAmount).toDecimalString();
+        const newDestBalanceMoney = destBalance.add(transferAmount);
+        if (BigInt(newDestBalanceMoney.toDecimalString()) > MAX_VND) {
+          throw new ValidationError([
+            { field: 'amount', reason: 'amount_out_of_range' },
+          ]);
+        }
+        const newDestBalance = newDestBalanceMoney.toDecimalString();
+
+        // kiem tra han muc ngay va tan suat giao dich truoc khi ghi so du
+        if (this.riskControl) {
+          const risk = await this.riskControl.checkAndConsumeOutflow(
+            sourceAccount.id,
+            command.amount,
+          );
+          if (risk.status === 'VELOCITY_LIMIT_EXCEEDED') {
+            throw new VelocityLimitExceededError();
+          }
+          if (risk.status === 'DAILY_LIMIT_EXCEEDED') {
+            throw new DailyLimitExceededError();
+          }
+          if (risk.status === 'OK') {
+            riskMemberId = risk.memberId;
+          }
+        }
+
+        await ctx.accounts.updateBalance(sourceAccount.id, newSourceBalance);
+        await ctx.accounts.updateBalance(destAccount.id, newDestBalance);
+
+        const transferRecord = await ctx.transfers.create({
+          sourceAccountId: sourceAccount.id,
+          destinationAccountId: destAccount.id,
+          initiatedByUserId: command.initiatedByUserId,
+          amount: command.amount,
+          idempotencyKey: command.idempotencyKey,
+          description: command.description ?? null,
+        });
+
+        await ctx.transactions.create({
+          accountId: sourceAccount.id,
+          transferId: transferRecord.id,
+          transactionType: 'DEBIT',
+          referenceType: 'TRANSFER_OUT',
+          amount: command.amount,
+          balanceAfter: newSourceBalance,
+          description: command.description ?? null,
+        });
+
+        await ctx.transactions.create({
+          accountId: destAccount.id,
+          transferId: transferRecord.id,
+          transactionType: 'CREDIT',
+          referenceType: 'TRANSFER_IN',
+          amount: command.amount,
+          balanceAfter: newDestBalance,
+          description: command.description ?? null,
+        });
+
+        return { transfer: transferRecord, isReplay: false };
       });
-
-      await ctx.transactions.create({
-        accountId: sourceAccount.id,
-        transferId: transferRecord.id,
-        transactionType: 'DEBIT',
-        referenceType: 'TRANSFER_OUT',
-        amount: command.amount,
-        balanceAfter: newSourceBalance,
-        description: command.description ?? null,
-      });
-
-      await ctx.transactions.create({
-        accountId: destAccount.id,
-        transferId: transferRecord.id,
-        transactionType: 'CREDIT',
-        referenceType: 'TRANSFER_IN',
-        amount: command.amount,
-        balanceAfter: newDestBalance,
-        description: command.description ?? null,
-      });
-
-      return { transfer: transferRecord, isReplay: false };
-    });
+    } catch (error) {
+      if (riskMemberId) {
+        await this.riskControl?.releaseOutflow(
+          command.sourceAccountId,
+          command.amount,
+          riskMemberId,
+        );
+      }
+      throw error;
+    }
 
     // chuyen tien thanh cong thi xoa so du cu tren redis cua ca 2 tai khoan
     if (!result.isReplay && this.reservation) {

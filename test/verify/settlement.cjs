@@ -133,7 +133,7 @@ withServer(
       `cold start race 20 vu: ok_201=${ok201} rejected_409=${rejected409} balance=${raceAcc.json.data.currentBalance} debit_entries=${raceHistory.json.pagination.total}`,
     );
   },
-  { RATE_LIMIT_ENABLED: 'false' },
+  { RATE_LIMIT_ENABLED: 'false', RISK_CONTROL_ENABLED: 'false' },
 ).catch((err) => {
   console.error(err);
   process.exit(1);

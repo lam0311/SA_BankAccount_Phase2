@@ -1,4 +1,11 @@
 import { Module } from '@nestjs/common';
+import { MoneyMovementModule } from '@src/modules/money-movement/money-movement.module';
+import {
+  BALANCE_RESERVATION,
+  WITHDRAW_SETTLEMENT,
+  type BalanceReservationPort,
+  type WithdrawSettlementPort,
+} from '@src/modules/money-movement/application/ports/balance-reservation.port';
 
 import { ACCOUNT_CACHE } from './application/ports/account-cache.port';
 import {
@@ -15,6 +22,8 @@ import {
 } from './application/ports/accounts.facade';
 import { OpenAccountHandler } from './application/commands/open-account.command';
 import { CloseAccountHandler } from './application/commands/close-account.command';
+import { FreezeAccountHandler } from './application/commands/freeze-account.command';
+import { UnfreezeAccountHandler } from './application/commands/unfreeze-account.command';
 import { GetAccountQueryHandler } from './application/queries/get-account.query';
 import { ListAccountsQueryHandler } from './application/queries/list-accounts.query';
 import { AccountLookupFacade } from './infrastructure/adapters/account-lookup.facade';
@@ -26,6 +35,7 @@ import { PrismaAccountQueryRepository } from './infrastructure/persistence/prism
 import { AccountsController } from './presentation/http/accounts.controller';
 
 @Module({
+  imports: [MoneyMovementModule],
   controllers: [AccountsController],
   providers: [
     PrismaAccountCommandRepository,
@@ -59,6 +69,24 @@ import { AccountsController } from './presentation/http/accounts.controller';
       useFactory: (commandRepo: AccountCommandRepositoryPort) =>
         new CloseAccountHandler(commandRepo),
       inject: [ACCOUNT_COMMAND_REPOSITORY],
+    },
+    {
+      provide: FreezeAccountHandler,
+      useFactory: (
+        commandRepo: AccountCommandRepositoryPort,
+        reservation: BalanceReservationPort,
+        settlement: WithdrawSettlementPort,
+      ) => new FreezeAccountHandler(commandRepo, reservation, settlement),
+      inject: [ACCOUNT_COMMAND_REPOSITORY, BALANCE_RESERVATION, WITHDRAW_SETTLEMENT],
+    },
+    {
+      provide: UnfreezeAccountHandler,
+      useFactory: (
+        commandRepo: AccountCommandRepositoryPort,
+        reservation: BalanceReservationPort,
+        settlement: WithdrawSettlementPort,
+      ) => new UnfreezeAccountHandler(commandRepo, reservation, settlement),
+      inject: [ACCOUNT_COMMAND_REPOSITORY, BALANCE_RESERVATION, WITHDRAW_SETTLEMENT],
     },
 
     // --- Query Handlers & Read Facade (Read side: Multi-level Cache -> DB) ---

@@ -7,12 +7,14 @@ import {
 import { Money } from '@src/common/domain/value-objects/money.value-object';
 import {
   ACCOUNT_EVENTS,
+  type AccountBalanceChangedEventPayload,
   type AccountClosedEventPayload,
   type AccountOpenedEventPayload,
 } from '@src/common/events';
 import { OutboxService } from '@src/infrastructure/outbox';
 import { PrismaService } from '@src/infrastructure/prisma/prisma.service';
 
+import { AccountAlreadyClosedError } from '../../domain/errors/account-closed.error';
 import type {
   AccountCommandRepositoryPort,
   CreateAccountInput,
@@ -195,6 +197,59 @@ export class PrismaAccountCommandRepository
     }
 
     return closed;
+  }
+
+  // doi trang thai tai khoan va ghi outbox de xoa cache doc
+  async updateStatus(
+    id: string,
+    userId: string,
+    fromStatus: 'ACTIVE' | 'FROZEN',
+    toStatus: 'ACTIVE' | 'FROZEN',
+  ): Promise<BankAccount | null> {
+    const { account, outboxEvent } = await this.prisma.$transaction(
+      async (tx) => {
+        const result = await tx.bankAccount.updateMany({
+          where: { id, userId, status: fromStatus },
+          data: { status: toStatus },
+        });
+
+        if (result.count !== 1) {
+          return { account: null, outboxEvent: null };
+        }
+
+        const updatedRow = await tx.bankAccount.findUniqueOrThrow({
+          where: { id },
+        });
+
+        // ghi outbox de subscriber tu dong xoa cache L1/L2 sau khi commit
+        const eventRecord =
+          await OutboxService.recordInTransaction<AccountBalanceChangedEventPayload>(
+            tx,
+            {
+              aggregateType: 'BankAccount',
+              aggregateId: updatedRow.id,
+              eventType: ACCOUNT_EVENTS.BALANCE_CHANGED,
+              payload: {
+                accounts: [
+                  {
+                    accountId: updatedRow.id,
+                    userId: updatedRow.userId,
+                    accountNumber: updatedRow.accountNumber,
+                  },
+                ],
+              },
+            },
+          );
+
+        return { account: this.toDomain(updatedRow), outboxEvent: eventRecord };
+      },
+    );
+
+    if (account && outboxEvent && this.outbox) {
+      await this.outbox.dispatchCommitted([outboxEvent]);
+    }
+
+    return account;
   }
 
   private toDomain(record: PrismaBankAccount): BankAccount {

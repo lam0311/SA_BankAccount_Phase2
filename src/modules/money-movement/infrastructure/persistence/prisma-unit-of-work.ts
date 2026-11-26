@@ -24,7 +24,7 @@ interface RawAccountLockRow {
   userId: string;
   accountNumber: string;
   currentBalance: string;
-  status: "ACTIVE" | "CLOSED";
+  status: "ACTIVE" | "FROZEN" | "CLOSED";
 }
 
 @Injectable()
@@ -168,7 +168,7 @@ export class PrismaUnitOfWork implements UnitOfWorkPort {
             id: acc.id,
             userId: acc.userId,
             currentBalance: acc.currentBalance.toString(),
-            status: acc.status as "ACTIVE" | "CLOSED",
+            status: acc.status as "ACTIVE" | "FROZEN" | "CLOSED",
             accountNumber: acc.accountNumber,
           };
         },

@@ -8,7 +8,7 @@ export const WITHDRAW_SETTLEMENT = Symbol("WITHDRAW_SETTLEMENT");
 export interface AccountBalanceCache {
   accountId: string;
   userId: string;
-  status: "ACTIVE" | "CLOSED";
+  status: "ACTIVE" | "FROZEN" | "CLOSED";
   balance: string;
 }
 
@@ -29,6 +29,7 @@ export type ReserveStatus =
   | "OK"
   | "INSUFFICIENT_FUNDS"
   | "NOT_OWNER"
+  | "FROZEN"
   | "CLOSED"
   | "REPLAY"
   | "MISS"

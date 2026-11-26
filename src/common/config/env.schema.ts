@@ -91,6 +91,29 @@ class EnvironmentVariables {
   @IsOptional()
   @IsIn(["true", "false"])
   RATE_LIMIT_ENABLED: string = "true";
+
+  @IsOptional()
+  @IsIn(["true", "false"])
+  RISK_CONTROL_ENABLED: string = "true";
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  DAILY_OUTFLOW_LIMIT_VND: string = "500000000";
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  VELOCITY_MAX_TX: number = 10;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(86400)
+  VELOCITY_WINDOW_SECONDS: number = 60;
 }
 
 export function validateEnv(

@@ -10,6 +10,7 @@ export function fakeAccountCommandRepository(): jest.Mocked<AccountCommandReposi
     createWithOpeningDeposit: jest.fn(),
     findById: jest.fn(),
     closeIfZeroBalance: jest.fn(),
+    updateStatus: jest.fn(),
   };
 }
 

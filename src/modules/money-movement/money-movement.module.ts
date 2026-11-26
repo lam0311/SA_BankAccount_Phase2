@@ -16,9 +16,14 @@ import {
   type BalanceReservationPort,
   type WithdrawSettlementPort,
 } from "./application/ports/balance-reservation.port";
+import {
+  RISK_CONTROL,
+  type RiskControlPort,
+} from "./application/ports/risk-control.port";
 import { PrismaUnitOfWork } from "./infrastructure/persistence/prisma-unit-of-work";
 import { PrismaTransactionQuery } from "./infrastructure/persistence/prisma-transaction-query";
 import { RedisAtomicReservationService } from "./infrastructure/cache/redis-atomic-reservation.service";
+import { RedisRiskControlService } from "./infrastructure/risk/redis-risk-control.service";
 import { WithdrawSettlementWorker } from "./infrastructure/workers/withdraw-settlement.worker";
 
 @Module({
@@ -32,6 +37,11 @@ import { WithdrawSettlementWorker } from "./infrastructure/workers/withdraw-sett
     {
       provide: BALANCE_RESERVATION,
       useExisting: RedisAtomicReservationService,
+    },
+    RedisRiskControlService,
+    {
+      provide: RISK_CONTROL,
+      useExisting: RedisRiskControlService,
     },
     WithdrawSettlementWorker,
     {
@@ -63,8 +73,9 @@ import { WithdrawSettlementWorker } from "./infrastructure/workers/withdraw-sett
         uow: UnitOfWorkPort,
         reservation: BalanceReservationPort,
         settlement: WithdrawSettlementPort,
-      ) => new WithdrawMoneyUseCase(uow, reservation, settlement),
-      inject: [UNIT_OF_WORK, BALANCE_RESERVATION, WITHDRAW_SETTLEMENT],
+        riskControl: RiskControlPort,
+      ) => new WithdrawMoneyUseCase(uow, reservation, settlement, riskControl),
+      inject: [UNIT_OF_WORK, BALANCE_RESERVATION, WITHDRAW_SETTLEMENT, RISK_CONTROL],
     },
     {
       provide: TransferMoneyUseCase,
@@ -72,8 +83,9 @@ import { WithdrawSettlementWorker } from "./infrastructure/workers/withdraw-sett
         uow: UnitOfWorkPort,
         reservation: BalanceReservationPort,
         settlement: WithdrawSettlementPort,
-      ) => new TransferMoneyUseCase(uow, reservation, settlement),
-      inject: [UNIT_OF_WORK, BALANCE_RESERVATION, WITHDRAW_SETTLEMENT],
+        riskControl: RiskControlPort,
+      ) => new TransferMoneyUseCase(uow, reservation, settlement, riskControl),
+      inject: [UNIT_OF_WORK, BALANCE_RESERVATION, WITHDRAW_SETTLEMENT, RISK_CONTROL],
     },
     {
       provide: GetTransactionHistoryUseCase,
@@ -81,6 +93,6 @@ import { WithdrawSettlementWorker } from "./infrastructure/workers/withdraw-sett
       inject: [TRANSACTION_QUERY],
     },
   ],
-  exports: [BALANCE_RESERVATION, WITHDRAW_SETTLEMENT],
+  exports: [BALANCE_RESERVATION, WITHDRAW_SETTLEMENT, RISK_CONTROL],
 })
 export class MoneyMovementModule {}

@@ -13,7 +13,7 @@ export interface AccountSnapshot {
   id: string;
   userId: string;
   currentBalance: string;
-  status: "ACTIVE" | "CLOSED";
+  status: "ACTIVE" | "FROZEN" | "CLOSED";
   accountNumber?: string;
 }
 

@@ -3,6 +3,8 @@ import { ACCOUNT_EVENTS } from '@src/common/events';
 import { Paginated } from '@src/common/http/interceptors/response-envelope.interceptor';
 import { OpenAccountHandler } from '@src/modules/accounts/application/commands/open-account.command';
 import { CloseAccountHandler } from '@src/modules/accounts/application/commands/close-account.command';
+import { FreezeAccountHandler } from '@src/modules/accounts/application/commands/freeze-account.command';
+import { UnfreezeAccountHandler } from '@src/modules/accounts/application/commands/unfreeze-account.command';
 import { GetAccountQueryHandler } from '@src/modules/accounts/application/queries/get-account.query';
 import { ListAccountsQueryHandler } from '@src/modules/accounts/application/queries/list-accounts.query';
 import { AccountLookupFacade } from '@src/modules/accounts/infrastructure/adapters/account-lookup.facade';
@@ -209,6 +211,8 @@ describe('CQRS Query Cache, Invalidator & Controller Contract', () => {
         new ListAccountsQueryHandler(queryRepo),
         new GetAccountQueryHandler(queryRepo),
         new CloseAccountHandler(commandRepo),
+        new FreezeAccountHandler(commandRepo),
+        new UnfreezeAccountHandler(commandRepo),
       );
 
       const domainAcc = makeAccount({

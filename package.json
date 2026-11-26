@@ -24,6 +24,7 @@
     "verify:auth": "node test/verify/auth-session.cjs",
     "verify:reservation": "node test/verify/reservation.cjs",
     "verify:settlement": "node test/verify/settlement.cjs",
+    "verify:risk": "node test/verify/risk-control.cjs",
     "verify:all": "node test/verify/run-all.cjs"
   },
   "repository": {
