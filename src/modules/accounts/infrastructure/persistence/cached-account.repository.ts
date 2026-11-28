@@ -17,7 +17,7 @@ export class CachedAccountRepository implements AccountRepositoryPort {
     private readonly cache: MultiLevelCacheService,
   ) {}
 
-  // --- LUỒNG GHI: Ghi DB xong thì xóa cache ---
+  // --- LUỒNG GHI: Ghi DB xong thì xóa cache (tự động Pub/Sub xóa L1 các Node khác) ---
   async createWithOpeningDeposit(input: CreateAccountInput): Promise<BankAccount> {
     const account = await this.prismaRepo.createWithOpeningDeposit(input);
     // Xóa cache danh sách của user để lần sau lấy được tài khoản mới
@@ -36,35 +36,27 @@ export class CachedAccountRepository implements AccountRepositoryPort {
     return closed;
   }
 
-  // --- LUỒNG ĐỌC: Đọc Cache trước, Miss mới vào DB ---
+  // --- LUỒNG ĐỌC: Single-Flight (TSK-17) -> Đọc L1/L2, nếu miss đồng loạt chỉ 1 query DB ---
   async findById(id: string): Promise<BankAccount | null> {
     const cacheKey = `accounts:id:${id}`;
-    const cached = await this.cache.get<any>(cacheKey);
+    const result = await this.cache.getOrSet<BankAccount | null>(
+      cacheKey,
+      60, // Cache 60s
+      () => this.prismaRepo.findById(id),
+    );
 
-    if (cached) {
-      return this.deserialize(cached);
-    }
-
-    const account = await this.prismaRepo.findById(id);
-    if (account) {
-      await this.cache.set(cacheKey, account, 60); // Cache 60s
-    }
-    return account;
+    return result ? this.deserialize(result) : null;
   }
 
   async findByAccountNumber(accountNumber: string): Promise<BankAccount | null> {
     const cacheKey = `accounts:acc_no:${accountNumber}`;
-    const cached = await this.cache.get<any>(cacheKey);
+    const result = await this.cache.getOrSet<BankAccount | null>(
+      cacheKey,
+      60,
+      () => this.prismaRepo.findByAccountNumber(accountNumber),
+    );
 
-    if (cached) {
-      return this.deserialize(cached);
-    }
-
-    const account = await this.prismaRepo.findByAccountNumber(accountNumber);
-    if (account) {
-      await this.cache.set(cacheKey, account, 60);
-    }
-    return account;
+    return result ? this.deserialize(result) : null;
   }
 
   async listByOwner(
@@ -74,30 +66,36 @@ export class CachedAccountRepository implements AccountRepositoryPort {
     const statusKey = options.status ?? 'ALL';
     const cacheKey = `accounts:user:${userId}:list:${statusKey}:p${options.page}:l${options.limit}`;
 
-    const cached = await this.cache.get<{ items: any[]; total: number }>(cacheKey);
-    if (cached) {
-      return {
-        items: cached.items.map((item) => this.deserialize(item)),
-        total: cached.total,
-      };
-    }
+    const page = await this.cache.getOrSet<AccountPage>(
+      cacheKey,
+      30, // Cache danh sách 30s
+      () => this.prismaRepo.listByOwner(userId, options),
+    );
 
-    const page = await this.prismaRepo.listByOwner(userId, options);
-    await this.cache.set(cacheKey, page, 30); // Cache danh sách 30s
-    return page;
+    return {
+      items: page.items.map((item) => this.deserialize(item)),
+      total: page.total,
+    };
   }
 
-  // Khôi phục Value Object Money và Date từ JSON
+  // Khôi phục Value Object Money và Date (an toàn cho cả object JSON từ Cache lẫn Entity từ Prisma)
   private deserialize(raw: any): BankAccount {
     return {
       ...raw,
-      currentBalance: Money.fromString(
-        typeof raw.currentBalance === 'object' && raw.currentBalance?.amountMinor
-          ? raw.currentBalance.amountMinor.toString()
-          : raw.currentBalance.toString(),
-      ),
-      createdAt: new Date(raw.createdAt),
-      closedAt: raw.closedAt ? new Date(raw.closedAt) : null,
+      currentBalance:
+        raw.currentBalance instanceof Money
+          ? raw.currentBalance
+          : Money.fromString(
+              typeof raw.currentBalance === 'object' && raw.currentBalance?.amountMinor
+                ? raw.currentBalance.amountMinor.toString()
+                : raw.currentBalance.toString(),
+            ),
+      createdAt: raw.createdAt instanceof Date ? raw.createdAt : new Date(raw.createdAt),
+      closedAt: raw.closedAt
+        ? raw.closedAt instanceof Date
+          ? raw.closedAt
+          : new Date(raw.closedAt)
+        : null,
     };
   }
 }

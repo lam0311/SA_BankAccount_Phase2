@@ -1,6 +1,9 @@
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
-import { requestIdMiddleware } from "@src/common/http/middleware";
+import {
+  helmetMiddleware,
+  requestIdMiddleware,
+} from "@src/common/http/middleware";
 import { GlobalExceptionFilter } from "@src/common/http/filters";
 import {
   ResponseEnvelopeInterceptor,
@@ -18,6 +21,7 @@ async function bootstrap() {
 
   app.setGlobalPrefix("api/v1");
 
+  app.use(helmetMiddleware);
   app.use(requestIdMiddleware);
   app.useGlobalFilters(new GlobalExceptionFilter());
   app.useGlobalInterceptors(
