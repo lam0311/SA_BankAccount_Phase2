@@ -21,12 +21,30 @@ import {
 
 describe('CQRS Query Cache, Invalidator & Controller Contract', () => {
   describe('CachedAccountQueryRepository', () => {
-    const makeMockCache = () => ({
-      get: jest.fn(),
-      set: jest.fn().mockResolvedValue(undefined),
-      del: jest.fn().mockResolvedValue(undefined),
-      delByPattern: jest.fn().mockResolvedValue(undefined),
-    });
+    const makeMockCache = () => {
+      const get = jest.fn();
+      const set = jest.fn().mockResolvedValue(undefined);
+      const getOrSet = jest.fn(
+        async (key: string, ttl: number, fetcher: () => Promise<unknown>) => {
+          const hit = await get(key);
+          if (hit !== null && hit !== undefined) {
+            return hit;
+          }
+          const value = await fetcher();
+          if (value !== null && value !== undefined) {
+            await set(key, value, ttl);
+          }
+          return value;
+        },
+      );
+      return {
+        get,
+        set,
+        getOrSet,
+        del: jest.fn().mockResolvedValue(undefined),
+        delByPattern: jest.fn().mockResolvedValue(undefined),
+      };
+    };
 
     test('findById: cache hit trả thẳng AccountReadModel không truy vấn DB', async () => {
       const prismaQueryRepo = fakeAccountQueryRepository();

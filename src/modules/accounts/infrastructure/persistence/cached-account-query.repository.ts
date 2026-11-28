@@ -12,9 +12,10 @@ import { accountCacheKeys } from './account-cache.invalidator';
 import { PrismaAccountQueryRepository } from './prisma-account-query.repository';
 
 /**
- * Cache-Aside Decorator CHỈ dành cho nhánh Query (CQRS).
+ * Cache-Aside + Single-Flight (TSK-17) Decorator CHỈ dành cho nhánh Query (CQRS).
  * Lưu trữ trực tiếp AccountReadModel phẳng trong L1 LRU + L2 Redis,
- * loại bỏ hoàn toàn bước serialize/deserialize Domain Entity & Money.
+ * loại bỏ hoàn toàn bước serialize/deserialize Domain Entity & Money,
+ * đồng thời gom các request cache-miss đồng thời thành đúng 1 truy vấn DB.
  */
 @Injectable()
 export class CachedAccountQueryRepository
@@ -27,36 +28,22 @@ export class CachedAccountQueryRepository
 
   async findById(id: string): Promise<AccountReadModel | null> {
     const cacheKey = accountCacheKeys.byId(id);
-    const cached = await this.cache.get<AccountReadModel>(cacheKey);
-
-    if (cached) {
-      return cached;
-    }
-
-    const account = await this.prismaQueryRepo.findById(id);
-    if (account) {
-      await this.cache.set(cacheKey, account, 60);
-    }
-    return account;
+    return this.cache.getOrSet<AccountReadModel | null>(
+      cacheKey,
+      60,
+      () => this.prismaQueryRepo.findById(id),
+    );
   }
 
   async findByAccountNumber(
     accountNumber: string,
   ): Promise<AccountReadModel | null> {
     const cacheKey = accountCacheKeys.byAccountNumber(accountNumber);
-    const cached = await this.cache.get<AccountReadModel>(cacheKey);
-
-    if (cached) {
-      return cached;
-    }
-
-    const account = await this.prismaQueryRepo.findByAccountNumber(
-      accountNumber,
+    return this.cache.getOrSet<AccountReadModel | null>(
+      cacheKey,
+      60,
+      () => this.prismaQueryRepo.findByAccountNumber(accountNumber),
     );
-    if (account) {
-      await this.cache.set(cacheKey, account, 60);
-    }
-    return account;
   }
 
   async listByOwner(
@@ -69,14 +56,10 @@ export class CachedAccountQueryRepository
       options.page,
       options.limit,
     );
-    const cached = await this.cache.get<AccountPageReadModel>(cacheKey);
-
-    if (cached) {
-      return cached;
-    }
-
-    const page = await this.prismaQueryRepo.listByOwner(userId, options);
-    await this.cache.set(cacheKey, page, 30);
-    return page;
+    return this.cache.getOrSet<AccountPageReadModel>(
+      cacheKey,
+      30,
+      () => this.prismaQueryRepo.listByOwner(userId, options),
+    );
   }
 }

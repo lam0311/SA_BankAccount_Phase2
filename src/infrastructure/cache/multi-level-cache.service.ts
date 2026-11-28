@@ -17,6 +17,12 @@ export interface CacheInvalidationMessage {
   readonly target: string;
 }
 
+export interface GetOrSetOptions {
+  readonly cacheNull?: boolean;
+}
+
+type InvalidationListener = (message: CacheInvalidationMessage) => void;
+
 const DEFAULT_SCAN_COUNT = 100;
 
 @Injectable()
@@ -26,6 +32,12 @@ export class MultiLevelCacheService implements OnModuleDestroy {
   private readonly redisClient: Redis;
   private readonly redisSubscriber: Redis;
   private readonly l1Cache: LRUCache<string, string>;
+
+  // TSK-17: Single-Flight (gom concurrent cache-miss vào 1 Promise) & chống Stale Write-Back
+  private readonly inFlight = new Map<string, Promise<unknown>>();
+  private readonly invalidatedInFlight = new Set<string>();
+  private readonly invalidationListeners = new Set<InvalidationListener>();
+  private subscribed = false;
 
   constructor(
     @Inject(redisConfig.KEY)
@@ -62,6 +74,9 @@ export class MultiLevelCacheService implements OnModuleDestroy {
     this.redisSubscriber.on('message', (channel: string, message: string) => {
       this.handleInvalidationMessage(channel, message);
     });
+    this.redisSubscriber.on('close', () => {
+      this.subscribed = false;
+    });
 
     this.redisClient.connect().catch((err) => {
       this.logger.warn(
@@ -80,9 +95,39 @@ export class MultiLevelCacheService implements OnModuleDestroy {
     return this.instanceId;
   }
 
+  hasInL1(key: string): boolean {
+    return this.l1Cache.has(key);
+  }
+
+  onL1Invalidated(listener: InvalidationListener): () => void {
+    this.invalidationListeners.add(listener);
+    return () => {
+      this.invalidationListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Chờ Redis Command Client và Pub/Sub Subscriber sẵn sàng (phục vụ khởi động/kiểm thử).
+   */
+  async waitUntilReady(timeoutMs: number = 3000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (
+        this.redisClient.status === 'ready' &&
+        this.redisSubscriber.status === 'ready' &&
+        this.subscribed
+      ) {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return false;
+  }
+
   private async initSubscriber(): Promise<void> {
     await this.redisSubscriber.connect();
     await this.redisSubscriber.subscribe(CACHE_INVALIDATION_CHANNEL);
+    this.subscribed = true;
   }
 
   /**
@@ -104,9 +149,13 @@ export class MultiLevelCacheService implements OnModuleDestroy {
       }
 
       if (parsed.type === 'key') {
-        this.l1Cache.delete(parsed.target);
+        this.evictLocalKey(parsed.target);
       } else if (parsed.type === 'pattern') {
         this.evictL1ByPattern(parsed.target);
+      }
+
+      for (const listener of this.invalidationListeners) {
+        listener(parsed as CacheInvalidationMessage);
       }
     } catch (error) {
       this.logger.warn(`Invalid cache invalidation message ignored: ${error}`);
@@ -135,6 +184,71 @@ export class MultiLevelCacheService implements OnModuleDestroy {
     return null;
   }
 
+  /**
+   * TSK-17: Single-Flight (Chống Cache Stampede / Thundering Herd).
+   * Nếu có N request đồng thời cùng miss 1 key, chỉ request ĐẦU TIÊN gọi `fetcher()`
+   * (truy vấn DB); N-1 request còn lại dùng chung Promise đang bay và nhận cùng kết quả.
+   */
+  async getOrSet<T>(
+    key: string,
+    ttlSeconds: number,
+    fetcher: () => Promise<T>,
+    options: GetOrSetOptions = {},
+  ): Promise<T> {
+    // Fast-path: kiểm tra L1 đồng bộ trong RAM (< 0.1ms)
+    const l1Hit = this.l1Cache.get(key);
+    if (l1Hit !== undefined) {
+      return JSON.parse(l1Hit) as T;
+    }
+
+    // Nếu đã có request khác đang bay cho cùng key -> chờ chung Promise đó
+    const existingFlight = this.inFlight.get(key);
+    if (existingFlight) {
+      return (await existingFlight) as T;
+    }
+
+    // Tạo duy nhất 1 Promise thực thi L2 lookup -> DB fetcher -> backfill Cache
+    const flight = (async (): Promise<T> => {
+      if (this.redisClient.status === 'ready') {
+        try {
+          const l2Hit = await this.redisClient.get(key);
+          if (l2Hit !== null) {
+            if (!this.invalidatedInFlight.has(key)) {
+              this.l1Cache.set(key, l2Hit, {
+                ttl: Math.min(ttlSeconds, 15) * 1000,
+              });
+            }
+            return JSON.parse(l2Hit) as T;
+          }
+        } catch (error) {
+          this.logger.error(`Redis GET error for key ${key}: ${error}`);
+        }
+      }
+
+      // Miss cả L1 & L2 -> Gọi DB đúng 1 lần duy nhất
+      const value = await fetcher();
+
+      const shouldCache =
+        (value !== null && value !== undefined) || options.cacheNull === true;
+
+      if (shouldCache && !this.invalidatedInFlight.has(key)) {
+        await this.set(key, value, ttlSeconds);
+      }
+
+      return value;
+    })();
+
+    // Lưu vào inFlight ĐỒNG BỘ trước bất kỳ lệnh await nào để gom toàn bộ concurrent callers
+    this.inFlight.set(key, flight);
+
+    try {
+      return await flight;
+    } finally {
+      this.inFlight.delete(key);
+      this.invalidatedInFlight.delete(key);
+    }
+  }
+
   async set(key: string, value: unknown, ttlSeconds: number = 60): Promise<void> {
     const serialized = JSON.stringify(value);
 
@@ -152,7 +266,7 @@ export class MultiLevelCacheService implements OnModuleDestroy {
   }
 
   async del(key: string, options?: CacheInvalidateOptions): Promise<void> {
-    this.l1Cache.delete(key);
+    this.evictLocalKey(key);
     try {
       await this.redisClient.del(key);
       await this.publishInvalidation('key', key);
@@ -183,10 +297,22 @@ export class MultiLevelCacheService implements OnModuleDestroy {
     }
   }
 
+  private evictLocalKey(key: string): void {
+    this.l1Cache.delete(key);
+    if (this.inFlight.has(key)) {
+      this.invalidatedInFlight.add(key);
+    }
+  }
+
   private evictL1ByPattern(pattern: string): void {
     for (const key of this.l1Cache.keys()) {
       if (this.matchPattern(key, pattern)) {
         this.l1Cache.delete(key);
+      }
+    }
+    for (const key of this.inFlight.keys()) {
+      if (this.matchPattern(key, pattern)) {
+        this.invalidatedInFlight.add(key);
       }
     }
   }
@@ -272,6 +398,8 @@ export class MultiLevelCacheService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.subscribed = false;
+    this.invalidationListeners.clear();
     await Promise.all([
       this.safeCloseClient(this.redisSubscriber),
       this.safeCloseClient(this.redisClient),
