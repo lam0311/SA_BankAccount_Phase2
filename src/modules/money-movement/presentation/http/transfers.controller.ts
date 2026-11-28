@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags, ApiHeader } from '@nestjs/swagger';
-import { CurrentUser } from '../../../../common/security/decorators';
+import { CurrentUser, RateLimit } from '../../../../common/security/decorators';
 import { AccessTokenPayload } from '../../../../common/security/ports';
 import { TransferMoneyDto } from './dto/transfer-money.dto';
 import { TransferMoneyUseCase } from '../../application/use-cases/transfer-money.use-case';
@@ -39,6 +39,8 @@ export class TransfersController {
   @ApiResponse(errorResponse(400, 'VALIDATION_ERROR, SAME_ACCOUNT_TRANSFER hoặc HTTP_ERROR khi thiếu Idempotency-Key'))
   @ApiResponse(errorResponse(404, 'ACCOUNT_NOT_FOUND: Source or destination account not found'))
   @ApiResponse(errorResponse(409, 'INSUFFICIENT_FUNDS hoặc ACCOUNT_NOT_ACTIVE'))
+  @ApiResponse(errorResponse(429, 'RATE_LIMIT_EXCEEDED: vượt giới hạn tốc độ chuyển khoản'))
+  @RateLimit({ tier: 'transfers', capacity: 20, windowMs: 10_000 })
   @Post()
   async transfer(
     @Body() dto: TransferMoneyDto,

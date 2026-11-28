@@ -16,7 +16,8 @@ const Global      = noopDecorator;
 const Catch       = noopDecorator;
 const SetMetadata = (_key, _val) => noopDecorator();
 const Inject      = noopParamDecorator;
-const createParamDecorator = (_fn) => noopDecorator();
+const Optional    = noopParamDecorator;
+const createParamDecorator = (_fn) => (_data) => () => {};
 
 const Controller  = (_path) => noopDecorator();
 const Post        = (_path) => noopDecorator();
@@ -103,6 +104,7 @@ module.exports = {
   Catch,
   SetMetadata,
   Inject,
+  Optional,
   createParamDecorator,
   Controller,
   Post,

@@ -27,6 +27,19 @@ Tài liệu ghi chép các đánh đổi kỹ thuật, bài học rút ra và đ
   $$\text{firstId} = \min(\text{sourceId}, \text{destId}), \quad \text{secondId} = \max(\text{sourceId}, \text{destId})$$
   Cả hai tiến trình đều buộc phải xin khóa `firstId` trước rồi mới xin khóa `secondId`. Tiến trình nào đến trước sẽ giữ khóa đầu tiên, tiến trình kia tự động chờ ở ngoài, triệt tiêu hoàn toàn khả năng xảy ra chu trình chờ đợi lẫn nhau.
 
+### 1.4. Tách biệt Đọc/Ghi (CQRS) kết hợp Multi-level Cache cho phân hệ Accounts
+– **Quyết định:** Tách rời hoàn toàn `AccountRepositoryPort` cũ thành `AccountCommandRepositoryPort` (nhánh ghi) và `AccountQueryRepositoryPort` (nhánh đọc trả `AccountReadModel` phẳng qua L1 In-Memory LRU + L2 Redis).  
+– **Lý do lựa chọn:**  
+  – Trong hệ thống ngân hàng, tần suất người dùng mở app xem số dư và danh sách tài khoản cao gấp nhiều lần tần suất mở hoặc đóng tài khoản. Việc dùng Read Model phẳng giúp bỏ qua hoàn toàn chi phí khởi tạo Domain Entity và Value Object `Money` (`bigint`) khi phục vụ từ cache.  
+  – Ngược lại, nếu bọc cache chung cho cả nhánh ghi, thao tác đóng tài khoản (`CloseAccountHandler`) có nguy cơ đọc phải số dư cũ trong cache. Tách riêng Command Repository bắt buộc nhánh ghi luôn kiểm tra trực tiếp trên Primary PostgreSQL.  
+– **Đánh đổi và cách xử lý:** Lưu cache số dư tài khoản làm nảy sinh nguy cơ *stale balance* khi giao dịch phát sinh ở module `money-movement`. Nhóm giải quyết bằng cơ chế **Post-Commit Cache Invalidation** trong `PrismaUnitOfWork`: theo dõi các tài khoản bị cập nhật số dư trong transaction và chỉ phát lệnh xóa cache L1/L2 sau khi PostgreSQL đã `COMMIT` thành công.  
+
+### 1.5. Thiết kế Health Check phân tầng (Critical vs Soft Degradation)
+– **Quyết định:** Xây dựng endpoint `GET /api/v1/health` kiểm tra song song PostgreSQL, Redis, Piscina Worker Pool và độ trễ Outbox, nhưng phân biệt rạch ròi giữa lỗi sống còn (`503 Service Unavailable`) và suy giảm mềm (`200 OK` kèm `status: "DEGRADED"`).  
+– **Lý do lựa chọn:**  
+  – Nếu gộp mọi sự cố phụ trợ (như mất kết nối Redis cache hoặc trễ hàng đợi Outbox) thành mã lỗi `503`, Docker hoặc Kubernetes sẽ đánh dấu container `unhealthy` và khởi động lại hàng loạt (*cascading restart*), làm sập toàn bộ hệ thống trong khi ứng dụng thực tế vẫn giao dịch bình thường nhờ cơ chế fallback về L1 LRU và PostgreSQL.  
+  – Chỉ khi thành phần sống còn (`postgres` hoặc `piscina` worker pool) ngừng hoạt động (`DOWN`), hệ thống mới trả `503` để ngắt lưu lượng điều phối vào instance lỗi.  
+
 ## 2. Rà soát thực tế so với thiết kế ban đầu
 
 | Tiêu chí | Thiết kế lý thuyết ban đầu | Hiện thực hóa trong mã nguồn | Đánh giá & Ghi chú thực tế |
@@ -34,9 +47,11 @@ Tài liệu ghi chép các đánh đổi kỹ thuật, bài học rút ra và đ
 | **Bảo toàn số dư** | Trừ tiền nguồn, cộng tiền đích | Bọc trọn vẹn trong `UnitOfWorkPort` | Hoạt động chính xác, rollback toàn bộ nếu có lỗi phát sinh giữa chừng. |
 | **Xử lý số âm** | Kiểm tra số dư khả dụng | Kiểm tra kép: ở tầng Application và CHECK constraint ở PostgreSQL | Phòng vệ hai lớp, chặn đứng tình trạng thấu chi. |
 | **Idempotency** | Gửi lại cùng key trả kết quả cũ | Lưu ràng buộc duy nhất trên cặp `(source_account_id, idempotency_key)` | Chống trừ tiền trùng lặp hiệu quả khi client bị timeout hoặc mạng chập chờn. |
-| **Kiểm tra quyền sở hữu** | Kiểm tra quyền trên từng route | `AccessTokenGuard` trích xuất danh tính, Use Case so khớp `userId` | Trả về 404 thay vì 403 để không tiết lộ sự tồn tại của tài khoản người khác. |
+| **Kiểm tra quyền sở hữu** | Kiểm tra quyền trên từng route | `AccessTokenGuard` trích xuất danh tính, Use Case / Handler so khớp `userId` | Trả về 404 thay vì 403 để không tiết lộ sự tồn tại của tài khoản người khác. |
 | **Lịch sử giao dịch** | Ghi nhận biến động số dư | Mỗi giao dịch ghi kèm `balanceAfter` | Dữ liệu sổ cái bất biến, phục vụ đối soát và kiểm toán tài chính. |
-| **Hiệu năng băm mật khẩu** | Đăng ký và đăng nhập an toàn | Bcrypt chi phí 12 chiếm khoảng 300ms CPU mỗi lượt | Đạt mục tiêu an toàn bảo mật, chấp nhận trần thông lượng đăng nhập khoảng 11 req/giây trên 4 CPU. |
+| **Hiệu năng băm mật khẩu** | Đăng ký và đăng nhập an toàn | Bcrypt chi phí 12 chạy trên Piscina Worker Thread Pool | Giải phóng hoàn toàn Event Loop chính để không làm nghẽn các API đọc/ghi khác dưới tải đăng nhập cao. |
+| **Tối ưu luồng đọc tài khoản** | Tách biệt đọc/ghi (CQRS) & Cache | `CachedAccountQueryRepository` (L1 LRU + L2 Redis) + xóa cache sau commit | Giảm tải đáng kể cho PostgreSQL mà vẫn tránh được hiện tượng đọc số dư cũ (*stale balance*). |
+| **Khả năng quan sát hạ tầng** | Health Check toàn diện | `HealthService` kiểm tra song song Postgres, Redis, Piscina & Outbox lag | Phân biệt rõ `OK`, `DEGRADED` (`200`) và `DOWN` (`503`), tích hợp trực tiếp vào Docker `HEALTHCHECK`. |
 
 ## 3. Các giới hạn hiện tại và hướng nâng cấp
 

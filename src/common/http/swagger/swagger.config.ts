@@ -26,6 +26,7 @@ export function setupSwagger(app: INestApplication): void {
       .addTag("Identity", "Authentication & User Management")
       .addTag("Accounts", "Bank Account Management")
       .addTag("Money Movement", "Deposits, Withdrawals & Transfers")
+      .addTag("Health", "System Health & Readiness Monitoring")
       .build();
 
     const document = SwaggerModule.createDocument(app, config);

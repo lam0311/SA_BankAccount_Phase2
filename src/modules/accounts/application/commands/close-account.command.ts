@@ -1,13 +1,19 @@
 import { Money } from '@src/common/domain/value-objects/money.value-object';
-import type { AccountRepositoryPort } from '../ports/account.repository.port';
+import type { AccountCommandRepositoryPort } from '../ports/account-command.repository.port';
 import { AccountHasBalanceError } from '../../domain/errors/account-has-balance.error';
 import { AccountNotFoundError } from '../../domain/errors/account-not-found.error';
 
-export class CloseAccountUseCase {
-  constructor(private readonly accounts: AccountRepositoryPort) {}
+export interface CloseAccountCommand {
+  currentUserId: string;
+  accountId: string;
+}
+
+export class CloseAccountHandler {
+  constructor(private readonly commandRepo: AccountCommandRepositoryPort) {}
 
   async execute(currentUserId: string, accountId: string): Promise<void> {
-    const account = await this.accounts.findById(accountId);
+    // Luôn đọc trực tiếp từ Primary DB qua Command Repository (không qua Cache)
+    const account = await this.commandRepo.findById(accountId);
 
     if (account === null || account.userId !== currentUserId) {
       throw new AccountNotFoundError();
@@ -22,7 +28,7 @@ export class CloseAccountUseCase {
       throw new AccountHasBalanceError();
     }
 
-    const closed = await this.accounts.closeIfZeroBalance(
+    const closed = await this.commandRepo.closeIfZeroBalance(
       accountId,
       currentUserId,
     );
@@ -31,9 +37,9 @@ export class CloseAccountUseCase {
       return;
     }
 
-    // Dữ liệu có thể đổi sau findById(): ví dụ request khác vừa nạp tiền
-    // hoặc vừa đóng account. Đọc lại để trả đúng kết quả.
-    const latest = await this.accounts.findById(accountId);
+    // Dữ liệu có thể đổi sau findById() (VD: request khác vừa nạp tiền hoặc vừa đóng account).
+    // Đọc lại trực tiếp từ Primary DB để trả đúng mã lỗi nghiệp vụ.
+    const latest = await this.commandRepo.findById(accountId);
 
     if (latest === null || latest.userId !== currentUserId) {
       throw new AccountNotFoundError();

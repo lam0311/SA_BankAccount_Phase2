@@ -1,6 +1,6 @@
 import { ValidationError } from '@src/common/domain/errors/common.errors';
 import { Money } from '@src/common/domain/value-objects/money.value-object';
-import type { AccountRepositoryPort } from '../ports/account.repository.port';
+import type { AccountCommandRepositoryPort } from '../ports/account-command.repository.port';
 import type { BankAccount } from '../../domain/entities/bank-account.entity';
 import {
   ACCOUNT_TYPES,
@@ -15,20 +15,20 @@ export interface OpenAccountCommand {
 
 const MAX_VND = 999_999_999_999_999_999n;
 
-export class OpenAccountUseCase {
-  constructor(private readonly accounts: AccountRepositoryPort) {}
+export class OpenAccountHandler {
+  constructor(private readonly commandRepo: AccountCommandRepositoryPort) {}
 
   async execute(
     currentUserId: string,
     command: OpenAccountCommand,
   ): Promise<BankAccount> {
     if (typeof command.accountName !== 'string') {
-        throw new ValidationError([
-            {
-              field: 'accountName',
-              reason: 'must_be_a_string',
-            },
-        ]);
+      throw new ValidationError([
+        {
+          field: 'accountName',
+          reason: 'must_be_a_string',
+        },
+      ]);
     }
     const accountName = command.accountName.trim();
 
@@ -72,7 +72,7 @@ export class OpenAccountUseCase {
       ]);
     }
 
-    return this.accounts.createWithOpeningDeposit({
+    return this.commandRepo.createWithOpeningDeposit({
       userId: currentUserId,
       accountName,
       accountType: command.accountType,

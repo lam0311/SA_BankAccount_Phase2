@@ -18,3 +18,13 @@ export class InvalidCredentialsError extends AppError {
     super("Email or password is incorrect");
   }
 }
+
+export class AccountLockedError extends AppError {
+  readonly errorCode = "ACCOUNT_LOCKED";
+  readonly httpStatus = 429;
+  constructor(retryAfterSeconds = 300) {
+    super(
+      `Account is temporarily locked due to too many failed login attempts. Try again in ${retryAfterSeconds} seconds`,
+    );
+  }
+}

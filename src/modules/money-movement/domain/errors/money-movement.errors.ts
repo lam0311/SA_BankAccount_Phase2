@@ -47,3 +47,30 @@ export class IdempotencyKeyReusedError extends AppError {
     super(message);
   }
 }
+
+export class AccountFrozenError extends AppError {
+  readonly errorCode = 'ACCOUNT_FROZEN';
+  readonly httpStatus = 409;
+
+  constructor(message = 'Account is frozen') {
+    super(message);
+  }
+}
+
+export class DailyLimitExceededError extends AppError {
+  readonly errorCode = 'DAILY_LIMIT_EXCEEDED';
+  readonly httpStatus = 409;
+
+  constructor(message = 'Daily outflow limit exceeded') {
+    super(message);
+  }
+}
+
+export class VelocityLimitExceededError extends AppError {
+  readonly errorCode = 'VELOCITY_LIMIT_EXCEEDED';
+  readonly httpStatus = 429;
+
+  constructor(message = 'Transaction velocity limit exceeded') {
+    super(message);
+  }
+}

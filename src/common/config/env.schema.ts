@@ -53,6 +53,34 @@ class EnvironmentVariables {
   @Max(15)
   BCRYPT_ROUNDS: number = 12;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(64)
+  BCRYPT_MAX_THREADS?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10000)
+  BCRYPT_MAX_QUEUE: number = 100;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  @Max(10000)
+  BCRYPT_HIGH_TRAFFIC_THRESHOLD: number = 10;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(60000)
+  EVENT_LOOP_MONITOR_INTERVAL_MS: number = 0;
+
   @IsString()
   REDIS_HOST: string = 'localhost';
 
@@ -63,6 +91,29 @@ class EnvironmentVariables {
   @IsOptional()
   @IsIn(["true", "false"])
   RATE_LIMIT_ENABLED: string = "true";
+
+  @IsOptional()
+  @IsIn(["true", "false"])
+  RISK_CONTROL_ENABLED: string = "true";
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  DAILY_OUTFLOW_LIMIT_VND: string = "500000000";
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  VELOCITY_MAX_TX: number = 10;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(86400)
+  VELOCITY_WINDOW_SECONDS: number = 60;
 }
 
 export function validateEnv(

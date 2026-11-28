@@ -5,10 +5,12 @@ import { config as loadEnv } from 'dotenv';
 import { Money } from '@src/common/domain/value-objects/money.value-object';
 import type { LoggerService } from '@src/common/observability/logger.service';
 import { PrismaService } from '@src/infrastructure/prisma/prisma.service';
-import { PrismaAccountRepository } from '@src/modules/accounts/infrastructure/persistence/prisma-account.repository';
+import { PrismaAccountCommandRepository } from '@src/modules/accounts/infrastructure/persistence/prisma-account-command.repository';
+import { PrismaAccountQueryRepository } from '@src/modules/accounts/infrastructure/persistence/prisma-account-query.repository';
 
 let prisma: PrismaService;
-let repository: PrismaAccountRepository;
+let commandRepository: PrismaAccountCommandRepository;
+let queryRepository: PrismaAccountQueryRepository;
 let testUserIds: string[] = [];
 
 loadEnv({ quiet: true });
@@ -49,7 +51,8 @@ beforeAll(async () => {
 
   prisma = new PrismaService(config, logger);
   await prisma.$connect();
-  repository = new PrismaAccountRepository(prisma);
+  commandRepository = new PrismaAccountCommandRepository(prisma);
+  queryRepository = new PrismaAccountQueryRepository(prisma);
 });
 
 afterEach(async () => {
@@ -82,11 +85,11 @@ afterAll(async () => {
   }
 });
 
-describe('PrismaAccountRepository with PostgreSQL', () => {
+describe('CQRS PrismaAccountCommandRepository & PrismaAccountQueryRepository with PostgreSQL', () => {
   it('persists the account and its opening deposit transaction', async () => {
     const user = await createTestUser();
 
-    const account = await repository.createWithOpeningDeposit({
+    const account = await commandRepository.createWithOpeningDeposit({
       userId: user.id,
       accountName: 'Payment account',
       accountType: 'PAYMENT',
@@ -117,7 +120,7 @@ describe('PrismaAccountRepository with PostgreSQL', () => {
   it('does not create an opening deposit transaction for a zero balance', async () => {
     const user = await createTestUser();
 
-    const account = await repository.createWithOpeningDeposit({
+    const account = await commandRepository.createWithOpeningDeposit({
       userId: user.id,
       accountName: 'Savings account',
       accountType: 'SAVINGS',
@@ -132,34 +135,34 @@ describe('PrismaAccountRepository with PostgreSQL', () => {
     ).toBe(0);
   });
 
-  it('reads by id and account number, and lists only the owner accounts', async () => {
+  it('reads flat ReadModels via QueryRepository by id, account number, and paginated owner list', async () => {
     const userA = await createTestUser();
     const userB = await createTestUser();
 
-    const accountA1 = await repository.createWithOpeningDeposit({
+    const accountA1 = await commandRepository.createWithOpeningDeposit({
       userId: userA.id,
       accountName: 'A1',
       accountType: 'PAYMENT',
       initialDeposit: Money.zero(),
     });
-    const accountA2 = await repository.createWithOpeningDeposit({
+    const accountA2 = await commandRepository.createWithOpeningDeposit({
       userId: userA.id,
       accountName: 'A2',
       accountType: 'SAVINGS',
       initialDeposit: Money.zero(),
     });
-    const accountB = await repository.createWithOpeningDeposit({
+    const accountB = await commandRepository.createWithOpeningDeposit({
       userId: userB.id,
       accountName: 'B1',
       accountType: 'PAYMENT',
       initialDeposit: Money.zero(),
     });
 
-    const firstPage = await repository.listByOwner(userA.id, {
+    const firstPage = await queryRepository.listByOwner(userA.id, {
       page: 1,
       limit: 1,
     });
-    const secondPage = await repository.listByOwner(userA.id, {
+    const secondPage = await queryRepository.listByOwner(userA.id, {
       page: 2,
       limit: 1,
     });
@@ -173,18 +176,20 @@ describe('PrismaAccountRepository with PostgreSQL', () => {
     expect(listedIds).toEqual([accountA1.id, accountA2.id].sort());
     expect(listedIds).not.toContain(accountB.id);
 
-    expect((await repository.findById(accountA1.id))?.userId).toBe(userA.id);
+    const readById = await queryRepository.findById(accountA1.id);
+    expect(readById?.userId).toBe(userA.id);
+    expect(readById?.currentBalance).toBe('0');
     expect(
-      (await repository.findByAccountNumber(accountA1.accountNumber))?.id,
+      (await queryRepository.findByAccountNumber(accountA1.accountNumber))?.id,
     ).toBe(accountA1.id);
-    expect(await repository.findById(randomUUID())).toBeNull();
+    expect(await queryRepository.findById(randomUUID())).toBeNull();
 
     await prisma.bankAccount.update({
       where: { id: accountA2.id },
       data: { status: 'CLOSED', closedAt: new Date() },
     });
 
-    const activeAccounts = await repository.listByOwner(userA.id, {
+    const activeAccounts = await queryRepository.listByOwner(userA.id, {
       status: 'ACTIVE',
       page: 1,
       limit: 10,
@@ -197,7 +202,7 @@ describe('PrismaAccountRepository with PostgreSQL', () => {
 
   it('closes a zero-balance account without deleting it', async () => {
     const user = await createTestUser();
-    const account = await repository.createWithOpeningDeposit({
+    const account = await commandRepository.createWithOpeningDeposit({
       userId: user.id,
       accountName: 'Close me',
       accountType: 'PAYMENT',
@@ -205,7 +210,7 @@ describe('PrismaAccountRepository with PostgreSQL', () => {
     });
 
     expect(
-      await repository.closeIfZeroBalance(account.id, user.id),
+      await commandRepository.closeIfZeroBalance(account.id, user.id),
     ).toBe(true);
 
     const stored = await prisma.bankAccount.findUniqueOrThrow({
@@ -219,7 +224,7 @@ describe('PrismaAccountRepository with PostgreSQL', () => {
 
   it('does not close an account with a non-zero balance', async () => {
     const user = await createTestUser();
-    const account = await repository.createWithOpeningDeposit({
+    const account = await commandRepository.createWithOpeningDeposit({
       userId: user.id,
       accountName: 'Still funded',
       accountType: 'PAYMENT',
@@ -227,7 +232,7 @@ describe('PrismaAccountRepository with PostgreSQL', () => {
     });
 
     expect(
-      await repository.closeIfZeroBalance(account.id, user.id),
+      await commandRepository.closeIfZeroBalance(account.id, user.id),
     ).toBe(false);
 
     const stored = await prisma.bankAccount.findUniqueOrThrow({

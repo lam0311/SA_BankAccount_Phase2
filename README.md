@@ -17,14 +17,15 @@ Trong một hệ thống ngân hàng thực tế, thách thức kỹ thuật l�
 
 | Phân hệ | Chức năng | Mô tả chi tiết |
 | :--- | :--- | :--- |
-| **Xác thực** | Đăng ký và đăng nhập | Đăng ký tài khoản bằng email, mật khẩu băm Bcrypt chi phí 12, cấp phát JWT Access Token. |
-| **Tài khoản** | Mở tài khoản | Hỗ trợ loại tài khoản `PAYMENT` (thanh toán) và `SAVINGS` (tiết kiệm) với số dư khởi tạo. |
-| | Xem thông tin | Tra cứu danh sách tài khoản thuộc quyền sở hữu hoặc xem chi tiết số dư một tài khoản. |
-| | Đóng tài khoản | Đóng tài khoản khi số dư đúng bằng 0, lưu vết lịch sử vĩnh viễn. |
+| **Xác thực** | Đăng ký và đăng nhập | Đăng ký tài khoản bằng email, mật khẩu băm Bcrypt chi phí 12 (qua Piscina Worker Pool), cấp phát JWT Access Token. |
+| **Tài khoản** | Mở tài khoản | Hỗ trợ loại tài khoản `PAYMENT` (thanh toán) và `SAVINGS` (tiết kiệm) với số dư khởi tạo (nhánh Command CQRS). |
+| | Xem thông tin | Tra cứu danh sách tài khoản hoặc chi tiết số dư tốc độ cao qua nhánh Query CQRS và Multi-level Cache (L1 LRU + L2 Redis). |
+| | Đóng tài khoản | Đóng tài khoản trực tiếp trên Primary DB khi số dư đúng bằng 0, chủ động xóa cache và lưu vết lịch sử vĩnh viễn. |
 | **Giao dịch** | Nạp tiền | Ghi nhận tăng số dư và ghi sổ cái giao dịch với mã tham chiếu `CASH_DEPOSIT`. |
 | | Rút tiền | Kiểm tra số dư khả dụng, trừ tiền và ghi sổ cái `CASH_WITHDRAWAL` để chặn rút quá số dư. |
 | | Chuyển khoản | Chuyển tiền nội bộ nguyên tử giữa 2 tài khoản kèm mã chống trùng lặp `Idempotency-Key`. |
 | | Lịch sử giao dịch | Tra cứu biến động số dư theo tài khoản, hỗ trợ phân trang và lọc theo thời gian hoặc loại giao dịch. |
+| **Giám sát** | Health Check toàn diện | Kiểm tra song song trạng thái và độ trễ của PostgreSQL, Redis Cache, Piscina Worker Pool và hàng đợi Transactional Outbox. |
 
 *Phạm vi thử nghiệm:* Hệ thống hoạt động trong môi trường mô phỏng nội bộ với đơn vị tiền tệ tiêu chuẩn là **VND**.
 
@@ -35,32 +36,34 @@ Nhóm lựa chọn các công nghệ hiện đại, ổn định và có khả n
 – **Ngôn ngữ và nền tảng:** TypeScript, Node.js v24 LTS.  
 – **Framework backend:** NestJS 12 trên nền Express, tận dụng cơ chế Dependency Injection, Middleware, Guard, Interceptor và Exception Filter toàn cục.  
 – **Cơ sở dữ liệu:** PostgreSQL 15, hỗ trợ mạnh mẽ ACID transactions, khóa dòng `SELECT ... FOR UPDATE` và các ràng buộc CHECK constraint.  
+– **Bộ nhớ đệm đa tầng (Multi-level Cache):** Kết hợp In-Memory `lru-cache` (tầng L1) và **Redis 7** qua `ioredis` (tầng L2) phục vụ nhánh đọc CQRS và giới hạn tần suất request (Token Bucket Rate Limiter).  
 – **ORM và quản lý migration:** Prisma 7, quản lý schema, tự động generate client type-safe và điều phối transaction.  
-– **Xác thực và bảo mật:** JSON Web Token cho xác thực phi trạng thái, `bcrypt` băm mật khẩu, `class-validator` và `class-transformer` kiểm soát chặt đầu vào.  
+– **Xác thực, đa luồng và bảo mật:** JSON Web Token cho xác thực phi trạng thái, `bcrypt` chạy trên **Piscina Worker Thread Pool** chuyên biệt để không chặn Event Loop, `class-validator` và `class-transformer` kiểm soát chặt đầu vào.  
 – **Tài liệu API:** Swagger UI và OpenAPI 3.0 tự động phát sinh tại `/api/docs`.  
-– **Đóng gói và triển khai:** Docker và Docker Compose v2.  
+– **Đóng gói và triển khai:** Docker (tích hợp `HEALTHCHECK` tự động) và Docker Compose v2.  
 – **Kiểm thử:** Jest cho kiểm thử tự động và Grafana k6 cho kiểm thử tải trên máy chủ độc lập.  
 
 ## 3. Kiến trúc hệ thống và cơ chế an toàn dữ liệu
 
-### Mô hình modular monolith kết hợp Clean Architecture và Hexagonal Architecture
+### Mô hình modular monolith kết hợp Clean Architecture, Hexagonal Architecture và CQRS
 
-Dự án áp dụng mô hình **Modular Monolith**: toàn bộ hệ thống chạy trong một ứng dụng NestJS duy nhất nhưng được chia tách ranh giới module rõ ràng (`identity`, `accounts`, `money-movement`). Lựa chọn này giúp hệ thống đơn giản trong việc triển khai và tối ưu hiệu năng do dùng chung transaction trực tiếp, tránh được sự phức tạp không cần thiết của Microservices ở quy mô đồ án.
+Dự án áp dụng mô hình **Modular Monolith**: toàn bộ hệ thống chạy trong một ứng dụng NestJS duy nhất nhưng được chia tách ranh giới module rõ ràng (`identity`, `accounts`, `money-movement`, `health`). Lựa chọn này giúp hệ thống đơn giản trong việc triển khai và tối ưu hiệu năng do dùng chung transaction trực tiếp, tránh được sự phức tạp không cần thiết của Microservices ở quy mô đồ án.
 
 Bên trong từng module, nhóm áp dụng kiến trúc phân tầng Clean Architecture và Hexagonal Architecture:
 1. **Domain Layer:** Chứa Entities (`BankAccount`, `User`), Value Object `Money` và các ngoại lệ nghiệp vụ. Hoàn toàn độc lập, không phụ thuộc vào framework bên ngoài.
-2. **Application Layer:** Chứa Use Cases thực thi nghiệp vụ và các Port định nghĩa hợp đồng giao tiếp.
-3. **Infrastructure Layer:** Chứa các Adapter hiện thực hóa các Port như Prisma repositories, Bcrypt hasher, JWT service.
+2. **Application Layer:** Chứa Use Cases, Command/Query Handlers thực thi nghiệp vụ và các Port định nghĩa hợp đồng giao tiếp.
+3. **Infrastructure Layer:** Chứa các Adapter hiện thực hóa các Port như Prisma repositories (Command/Query), Multi-level Cache (L1 LRU + L2 Redis), Bcrypt Piscina worker hasher, JWT service và Outbox health indicator.
 4. **Presentation Layer:** Controllers và DTO tiếp nhận HTTP request, validate dữ liệu và trả về phản hồi chuẩn.
 
 ```mermaid
 flowchart TD
-    Client[Client / Swagger UI] --> Presentation[Presentation Layer: Controllers & DTOs]
-    Presentation --> Application[Application Layer: Use Cases]
-    Application --> Domain[Domain Layer: Entities & Money Value Object]
-    Application --> Ports[Application Ports: Interfaces]
-    Adapters[Infrastructure Adapters: Prisma, Bcrypt, JWT] -. Implements .-> Ports
-    Adapters --> Database[(PostgreSQL Database)]
+    Client["Client / Swagger UI"] --> Presentation["Presentation Layer: Controllers & DTOs"]
+    Presentation --> Application["Application Layer: Use Cases & CQRS Handlers"]
+    Application --> Domain["Domain Layer: Entities & Money Value Object"]
+    Application --> Ports["Application Ports: Interfaces"]
+    Adapters["Infrastructure Adapters: Prisma, Redis/LRU, Piscina, JWT"] -. Implements .-> Ports
+    Adapters --> Cache[("Multi-level Cache: L1 LRU + L2 Redis")]
+    Adapters --> Database[("PostgreSQL Primary DB")]
 ```
 
 ### 5 cơ chế cốt lõi đảm bảo an toàn tiền tệ
@@ -76,13 +79,32 @@ flowchart TD
 5. **Đảm bảo độ chính xác số học tuyệt đối:**
    Hệ thống không sử dụng kiểu dữ liệu số thực của JavaScript để tránh sai số làm tròn. Toàn bộ tính toán tiền tệ được bọc trong Value Object `Money` sử dụng `bigint` cho số nguyên VND, truyền qua HTTP API dưới dạng chuỗi `string`, và lưu trữ trong PostgreSQL bằng kiểu `DECIMAL(18, 0)`.
 
+### Mô hình CQRS kết hợp Multi-level Cache và Xóa Cache Sau Commit
+
+Phân hệ `accounts` được tái cấu trúc theo mẫu **CQRS (Command Query Responsibility Segregation)** để giải quyết đồng thời bài toán hiệu năng đọc cao và tính nhất quán nghiêm ngặt khi ghi:
+
+– **Nhánh Ghi (Command Side — Strong Consistency):** `OpenAccountHandler` và `CloseAccountHandler` giao tiếp qua `AccountCommandRepositoryPort` (`PrismaAccountCommandRepository`), luôn đọc/ghi trực tiếp trên **Primary PostgreSQL** và kiểm tra quy tắc qua Domain Entity `BankAccount` cùng Value Object `Money` (tuyệt đối không đi qua Cache).  
+– **Nhánh Đọc (Query Side — High Throughput):** `GetAccountQueryHandler`, `ListAccountsQueryHandler` và `AccountLookupFacade` sử dụng `AccountQueryRepositoryPort` trả về Read Model phẳng `AccountReadModel` (lưu sẵn chuỗi số dư và ISO timestamp, loại bỏ chi phí khởi tạo `Money`/`Date`). Tầng `CachedAccountQueryRepository` bọc mô hình Cache-Aside đa tầng (**L1 In-Memory LRU** TTL tối đa 15s $\rightarrow$ **L2 Redis** TTL 30s–60s $\rightarrow$ PostgreSQL) và sẵn sàng điều hướng sang Read Replica độc lập.  
+– **Xóa Cache Sau Commit Liên Module (Post-Commit Cache Invalidation):** Cả Command Handlers của `accounts` lẫn `PrismaUnitOfWork` của `money-movement` đều tích hợp `AccountCachePort` (`AccountCacheInvalidator`). Khi nạp tiền, rút tiền hoặc chuyển khoản, danh sách các tài khoản biến động số dư được ghi nhận trong transaction nhưng **chỉ xóa cache sau khi PostgreSQL đã `COMMIT` thành công**, triệt tiêu hoàn toàn lỗi *stale balance* mà không làm bẩn cache nếu giao dịch bị rollback.  
+
+### Giám sát sức khỏe toàn diện (Comprehensive Health Check)
+
+Module `health` cung cấp endpoint công khai `GET /api/v1/health` (được miễn trừ khỏi bộ đếm `TrafficLoadMiddleware` và tích hợp trực tiếp vào chỉ thị `HEALTHCHECK` của `Dockerfile`), thực thi kiểm tra song song 4 thành phần hạ tầng với ngưỡng timeout độc lập:
+
+– **PostgreSQL (`postgres`):** Kiểm tra kết nối sống bằng `SELECT 1` (timeout `2000ms`) và đo độ trễ `latencyMs`.  
+– **Redis Cache (`redis`):** Kiểm tra phản hồi `PING` trên tầng cache L2 (timeout `1500ms`) và đo `latencyMs`.  
+– **Piscina Worker Pool (`piscina`):** Giám sát trạng thái luồng băm Bcrypt (`inFlight`, `queued`, `maxThreads`, `maxQueue`, `currentLimit`).  
+– **Transactional Outbox (`outbox`):** Qua `OutboxHealthIndicatorPort`, tự động phát hiện bảng Outbox (nếu đã kích hoạt trong schema) để thống kê số sự kiện tồn đọng (`pendingCount`) và độ trễ xử lý (`lagMs`, ngưỡng mặc định `30000ms`).  
+– **Cơ chế phân tầng trạng thái chống Cascading Restart:** Trả `200 OK` (`status: "OK"` hoặc `"DEGRADED"` khi chỉ suy giảm mềm ở Redis, hàng đợi Piscina chạm ngưỡng hoặc Outbox trễ) để tránh Docker/Orchestrator khởi động lại container dây chuyền khi chịu tải cao; chỉ trả `503 Service Unavailable` (`SERVICE_UNAVAILABLE`) khi thành phần sống còn (`postgres` hoặc `piscina`) ngừng hoạt động (`DOWN`).  
+
 ## 4. Danh sách REST API chính
 
 Base URL: `http://localhost:3000/api/v1`  
-Tất cả các endpoint (trừ Register/Login) đều yêu cầu Header: `Authorization: Bearer <access_token>`.
+Tất cả các endpoint (trừ Register, Login và Health Check) đều yêu cầu Header: `Authorization: Bearer <access_token>`.
 
 | Phương thức | Endpoint | Yêu cầu JWT | Mô tả chức năng | HTTP Status |
 | :--- | :--- | :---: | :--- | :---: |
+| `GET` | `/health` | Không | Kiểm tra sức khỏe toàn diện (Postgres, Redis, Piscina, Outbox) | `200 OK` / `503` |
 | `POST` | `/auth/register` | Không | Đăng ký người dùng mới | `201 Created` |
 | `POST` | `/auth/login` | Không | Đăng nhập lấy JWT access token | `200 OK` |
 | `POST` | `/accounts` | Có | Mở tài khoản ngân hàng mới | `201 Created` |
@@ -151,8 +173,9 @@ Khi có lỗi, hệ thống không bao giờ để lộ stack trace ra ngoài:
    docker compose up --build -d
    ```
 
-4. **Trải nghiệm và kiểm thử trên Swagger UI:**
-   – Mở trình duyệt truy cập: **`http://localhost:3000/api/docs`**  
+4. **Kiểm tra sức khỏe hệ thống và trải nghiệm trên Swagger UI:**
+   – Kiểm tra nhanh trạng thái hạ tầng: **`http://localhost:3000/api/v1/health`**  
+   – Mở trình duyệt truy cập Swagger UI: **`http://localhost:3000/api/docs`**  
    – Đăng ký tài khoản $\rightarrow$ Đăng nhập lấy `accessToken`.  
    – Bấm nút **Authorize** ở góc trên bên phải Swagger, dán token vào để thực hiện các thao tác mở tài khoản, nạp rút tiền và chuyển khoản.  
 
@@ -164,7 +187,7 @@ Khi có lỗi, hệ thống không bao giờ để lộ stack trace ra ngoài:
 ## 6. Kết quả kiểm thử và đo tải thực tế
 
 Dự án được kiểm thử toàn diện từ Unit Test đến Performance Test:
-– **Unit và Integration Test:** 25 test suites, 172 test cases passed 100%. Chạy lệnh: `npm test`.  
+– **Unit Test:** 30 test suites, 210 test cases passed 100% (bao phủ toàn bộ nghiệp vụ cốt lõi, nhánh đọc/ghi CQRS, Multi-level Cache invalidation và Health Check). Chạy lệnh: `npm test`.  
 – **Swagger Contract Test:** Kiểm tra tính hợp lệ của tài liệu OpenAPI. Chạy lệnh: `npm run test:swagger`.  
 
 ### Báo cáo kiểm thử tải độc lập trên Kaggle CPU
@@ -195,20 +218,24 @@ SA_BankAccount/
 │   ├── app.module.ts                   # Module gốc cấu hình hệ thống
 │   ├── main.ts                         # Điểm khởi chạy ứng dụng
 │   ├── common/                         # Tầng dùng chung xuyên suốt các module
-│   │   ├── config/                     # Quản lý biến môi trường
+│   │   ├── concurrency/                # Bộ đếm tải lưu lượng đồng thời (TrafficLoadService)
+│   │   ├── config/                     # Quản lý & kiểm tra biến môi trường
 │   │   ├── domain/                     # Value Object Money, AppError chuẩn hóa
-│   │   ├── http/                       # Exception filter, interceptors, pipes, Swagger
-│   │   └── security/                   # Guards, decorators, ports xác thực
+│   │   ├── http/                       # Exception filter, interceptors, middleware, pipes, Swagger
+│   │   ├── observability/              # Logger chuẩn hóa & giám sát Event Loop
+│   │   └── security/                   # Guards, decorators, ports xác thực & Redis Rate Limiter
 │   ├── infrastructure/
+│   │   ├── cache/                      # Multi-level Cache (L1 In-Memory LRU + L2 Redis)
 │   │   └── prisma/                     # Kết nối cơ sở dữ liệu Prisma Client
-│   └── modules/                        # Các bounded context nghiệp vụ
-│       ├── identity/                   # Phân hệ quản lý người dùng & xác thực
-│       ├── accounts/                   # Phân hệ quản lý tài khoản & số dư
-│       └── money-movement/             # Phân hệ điều phối nạp, rút, chuyển khoản
+│   └── modules/                        # Các bounded context nghiệp vụ & vận hành
+│       ├── identity/                   # Phân hệ người dùng, JWT & Piscina Bcrypt Worker Pool
+│       ├── accounts/                   # Phân hệ tài khoản theo mô hình CQRS (Commands / Queries)
+│       ├── money-movement/             # Phân hệ điều phối nạp, rút, chuyển khoản & xóa cache sau commit
+│       └── health/                     # Phân hệ giám sát sức khỏe toàn diện (/api/v1/health)
 ├── prisma/
 │   ├── schema.prisma                   # Định nghĩa Data Model PostgreSQL
 │   └── migrations/                     # Lịch sử các bản migration SQL
-├── test/                               # Bộ test suites
+├── test/                               # Bộ Unit, Integration, Contract, E2E & Performance tests
 └── docs/                               # Tài liệu hướng dẫn chuyên sâu đồ án
     ├── project-guide/                  # Hướng dẫn chi tiết kiến trúc & vận hành
     └── performance/                    # Chi tiết báo cáo đo tải Kaggle CPU
@@ -217,11 +244,12 @@ SA_BankAccount/
 ## 8. Tài liệu kỹ thuật chi tiết
 
 Để tìm hiểu sâu hơn về từng khía cạnh kỹ thuật của đồ án, mời Thầy Cô và các bạn tham khảo các tài liệu chuyên đề:
-– [Hướng dẫn kiến trúc phân tầng và Port/Adapter](docs/project-guide/01-architecture.md)  
+– [Hướng dẫn kiến trúc phân tầng, CQRS, Port/Adapter và Health Check](docs/project-guide/01-architecture.md)  
 – [Thiết kế cơ sở dữ liệu và ràng buộc toàn vẹn](docs/project-guide/02-database.md)  
 – [Đặc tả chi tiết hợp đồng REST API](docs/project-guide/03-api.md)  
 – [Quy tắc nghiệp vụ và vòng đời tài khoản](docs/project-guide/04-business-rules.md)  
 – [Hướng dẫn chạy dự án và demo](docs/project-guide/05-running.md)  
 – [Hướng dẫn thực thi các bộ kiểm thử](docs/project-guide/06-testing.md)  
+– [Đánh giá kiến trúc và các đánh đổi kỹ thuật](docs/project-guide/07-introduce-review.md)  
 – [Phân tích 9 tình huống xung đột đồng thời và cách xử lý](docs/project-guide/08-problem-scenarios.md)  
 – [Báo cáo chi tiết đo tải k6 trên Kaggle](docs/performance/phase1-load-test.md)  

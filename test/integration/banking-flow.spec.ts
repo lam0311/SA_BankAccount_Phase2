@@ -12,11 +12,12 @@ import { JwtTokenService } from '@src/modules/identity/infrastructure/security/j
 import { RegisterUserUseCase } from '@src/modules/identity/application/use-cases/register-user.use-case';
 import { LoginUseCase } from '@src/modules/identity/application/use-cases/login.use-case';
 
-import { PrismaAccountRepository } from '@src/modules/accounts/infrastructure/persistence/prisma-account.repository';
-import { OpenAccountUseCase } from '@src/modules/accounts/application/use-cases/open-account.use-case';
-import { CloseAccountUseCase } from '@src/modules/accounts/application/use-cases/close-account.use-case';
-import { GetAccountUseCase } from '@src/modules/accounts/application/use-cases/get-account.use-case';
-import { ListAccountsUseCase } from '@src/modules/accounts/application/use-cases/list-accounts.use-case';
+import { PrismaAccountCommandRepository } from '@src/modules/accounts/infrastructure/persistence/prisma-account-command.repository';
+import { PrismaAccountQueryRepository } from '@src/modules/accounts/infrastructure/persistence/prisma-account-query.repository';
+import { OpenAccountHandler } from '@src/modules/accounts/application/commands/open-account.command';
+import { CloseAccountHandler } from '@src/modules/accounts/application/commands/close-account.command';
+import { GetAccountQueryHandler } from '@src/modules/accounts/application/queries/get-account.query';
+import { ListAccountsQueryHandler } from '@src/modules/accounts/application/queries/list-accounts.query';
 import { AccountHasBalanceError } from '@src/modules/accounts/domain/errors/account-has-balance.error';
 
 import { PrismaUnitOfWork } from '@src/modules/money-movement/infrastructure/persistence/prisma-unit-of-work';
@@ -31,15 +32,16 @@ loadEnv({ quiet: true });
 
 describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', () => {
   let prisma: PrismaService;
+  let passwordHasher: BcryptPasswordHasher;
 
   let registerUseCase: RegisterUserUseCase;
   let loginUseCase: LoginUseCase;
   let jwtTokenService: JwtTokenService;
 
-  let openAccountUseCase: OpenAccountUseCase;
-  let closeAccountUseCase: CloseAccountUseCase;
-  let getAccountUseCase: GetAccountUseCase;
-  let listAccountsUseCase: ListAccountsUseCase;
+  let openAccountHandler: OpenAccountHandler;
+  let closeAccountHandler: CloseAccountHandler;
+  let getAccountQueryHandler: GetAccountQueryHandler;
+  let listAccountsQueryHandler: ListAccountsQueryHandler;
 
   let depositUseCase: DepositMoneyUseCase;
   let withdrawUseCase: WithdrawMoneyUseCase;
@@ -71,7 +73,7 @@ describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', ()
     await prisma.$connect();
 
     const userRepository = new PrismaUserRepository(prisma);
-    const passwordHasher = new BcryptPasswordHasher({ bcryptRounds: 4 } as any);
+    passwordHasher = new BcryptPasswordHasher({ bcryptRounds: 4 } as any);
     jwtTokenService = new JwtTokenService({
       accessSecret: 'full-flow-integration-test-secret-min-32-chars!',
       accessTtl: '15m',
@@ -79,11 +81,12 @@ describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', ()
     registerUseCase = new RegisterUserUseCase(userRepository, passwordHasher);
     loginUseCase = new LoginUseCase(userRepository, passwordHasher, jwtTokenService);
 
-    const accountRepository = new PrismaAccountRepository(prisma);
-    openAccountUseCase = new OpenAccountUseCase(accountRepository);
-    closeAccountUseCase = new CloseAccountUseCase(accountRepository);
-    getAccountUseCase = new GetAccountUseCase(accountRepository);
-    listAccountsUseCase = new ListAccountsUseCase(accountRepository);
+    const accountCommandRepository = new PrismaAccountCommandRepository(prisma);
+    const accountQueryRepository = new PrismaAccountQueryRepository(prisma);
+    openAccountHandler = new OpenAccountHandler(accountCommandRepository);
+    closeAccountHandler = new CloseAccountHandler(accountCommandRepository);
+    getAccountQueryHandler = new GetAccountQueryHandler(accountQueryRepository);
+    listAccountsQueryHandler = new ListAccountsQueryHandler(accountQueryRepository);
 
     const uow = new PrismaUnitOfWork(prisma);
     const queryPort = new PrismaTransactionQuery(prisma);
@@ -94,6 +97,9 @@ describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', ()
   });
 
   afterAll(async () => {
+    if (passwordHasher) {
+      await passwordHasher.onModuleDestroy();
+    }
     if (prisma) {
       await prisma.$disconnect();
     }
@@ -132,9 +138,7 @@ describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', ()
   });
 
   it('xuyên suốt vòng đời ngân hàng: Đăng ký -> Đăng nhập -> Mở TK -> Nạp -> Rút -> Chuyển -> Lịch sử -> Đóng TK', async () => {
-    // -------------------------------------------------------------------------
     // 1. UC-01 & UC-02: User 1 (Alice) đăng ký và đăng nhập
-    // -------------------------------------------------------------------------
     const aliceEmail = `alice-${randomUUID()}@bank.test`;
     const aliceUser = await registerUseCase.execute({
       fullName: 'Alice Nguyen',
@@ -153,10 +157,8 @@ describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', ()
     const aliceTokenPayload = await jwtTokenService.verifyAccessToken(aliceLogin.accessToken);
     expect(aliceTokenPayload.sub).toBe(aliceUser.id);
 
-    // -------------------------------------------------------------------------
     // 2. UC-03 & UC-07: Alice mở tài khoản với nạp ban đầu 100k
-    // -------------------------------------------------------------------------
-    const aliceAccount = await openAccountUseCase.execute(aliceUser.id, {
+    const aliceAccount = await openAccountHandler.execute(aliceUser.id, {
       accountName: 'Alice Primary Account',
       accountType: 'PAYMENT',
       initialDeposit: '100000',
@@ -165,13 +167,11 @@ describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', ()
     expect(aliceAccount.currentBalance.toDecimalString()).toBe('100000');
     expect(aliceAccount.status).toBe('ACTIVE');
 
-    const aliceAccountsList = await listAccountsUseCase.execute(aliceUser.id, { page: 1, limit: 10 });
+    const aliceAccountsList = await listAccountsQueryHandler.execute(aliceUser.id, { page: 1, limit: 10 });
     expect(aliceAccountsList.items).toHaveLength(1);
     expect(aliceAccountsList.items[0].id).toBe(aliceAccount.id);
 
-    // -------------------------------------------------------------------------
     // 3. UC-01 & UC-03: User 2 (Bob) đăng ký và mở tài khoản 0đ
-    // -------------------------------------------------------------------------
     const bobEmail = `bob-${randomUUID()}@bank.test`;
     const bobUser = await registerUseCase.execute({
       fullName: 'Bob Tran',
@@ -181,42 +181,36 @@ describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', ()
     });
     testUserIds.push(bobUser.id);
 
-    const bobAccount = await openAccountUseCase.execute(bobUser.id, {
+    const bobAccount = await openAccountHandler.execute(bobUser.id, {
       accountName: 'Bob Wallet Account',
       accountType: 'PAYMENT',
       initialDeposit: '0',
     });
     expect(bobAccount.currentBalance.toDecimalString()).toBe('0');
 
-    // -------------------------------------------------------------------------
     // 4. UC-05: Alice nạp thêm 400k tiền mặt vào tài khoản
-    // -------------------------------------------------------------------------
-    const depositTx = await depositUseCase.execute({
+    const depositRes = await depositUseCase.execute({
       accountId: aliceAccount.id,
       userId: aliceUser.id,
       amount: '400000',
       description: 'Cash deposit at ATM',
     });
-    expect(depositTx.balanceAfter).toBe('500000');
-    expect(depositTx.transactionType).toBe('CREDIT');
-    expect(depositTx.referenceType).toBe('CASH_DEPOSIT');
+    expect(depositRes.transaction.balanceAfter).toBe('500000');
+    expect(depositRes.transaction.transactionType).toBe('CREDIT');
+    expect(depositRes.transaction.referenceType).toBe('CASH_DEPOSIT');
 
-    // -------------------------------------------------------------------------
     // 5. UC-06: Alice rút 100k tiền mặt
-    // -------------------------------------------------------------------------
-    const withdrawTx = await withdrawUseCase.execute({
+    const withdrawRes = await withdrawUseCase.execute({
       accountId: aliceAccount.id,
       userId: aliceUser.id,
       amount: '100000',
       description: 'ATM withdrawal',
     });
-    expect(withdrawTx.balanceAfter).toBe('400000');
-    expect(withdrawTx.transactionType).toBe('DEBIT');
-    expect(withdrawTx.referenceType).toBe('CASH_WITHDRAWAL');
+    expect(withdrawRes.transaction.balanceAfter).toBe('400000');
+    expect(withdrawRes.transaction.transactionType).toBe('DEBIT');
+    expect(withdrawRes.transaction.referenceType).toBe('CASH_WITHDRAWAL');
 
-    // -------------------------------------------------------------------------
     // 6. UC-08: Alice chuyển 250k sang tài khoản của Bob
-    // -------------------------------------------------------------------------
     const transferResult = await transferUseCase.execute({
       sourceAccountId: aliceAccount.id,
       destinationAccountNumber: bobAccount.accountNumber,
@@ -227,14 +221,12 @@ describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', ()
     });
     expect(transferResult.transfer).toBeDefined();
 
-    const aliceAccAfterTransfer = await getAccountUseCase.execute(aliceUser.id, aliceAccount.id);
-    const bobAccAfterTransfer = await getAccountUseCase.execute(bobUser.id, bobAccount.id);
-    expect(aliceAccAfterTransfer.currentBalance.toDecimalString()).toBe('150000');
-    expect(bobAccAfterTransfer.currentBalance.toDecimalString()).toBe('250000');
+    const aliceAccAfterTransfer = await getAccountQueryHandler.execute(aliceUser.id, aliceAccount.id);
+    const bobAccAfterTransfer = await getAccountQueryHandler.execute(bobUser.id, bobAccount.id);
+    expect(aliceAccAfterTransfer.currentBalance).toBe('150000');
+    expect(bobAccAfterTransfer.currentBalance).toBe('250000');
 
-    // -------------------------------------------------------------------------
     // 7. Transaction History: Alice kiểm tra lịch sử giao dịch
-    // -------------------------------------------------------------------------
     const history = await historyUseCase.execute({
       accountId: aliceAccount.id,
       userId: aliceUser.id,
@@ -242,43 +234,34 @@ describe('Full Banking Flow Integration Test (All Use Cases UC-01 to UC-08)', ()
       limit: 10,
     });
     expect(history.total).toBe(4);
-    // Bút toán: OPENING_DEPOSIT (100k) + CASH_DEPOSIT (400k) + CASH_WITHDRAWAL (100k) + TRANSFER_OUT (250k)
     const refTypes = history.items.map((i) => i.referenceType);
     expect(refTypes).toContain('OPENING_DEPOSIT');
     expect(refTypes).toContain('CASH_DEPOSIT');
     expect(refTypes).toContain('CASH_WITHDRAWAL');
     expect(refTypes).toContain('TRANSFER_OUT');
 
-    // -------------------------------------------------------------------------
     // 8. UC-04: Alice thử đóng tài khoản khi còn số dư (150k) -> Bị từ chối
-    // -------------------------------------------------------------------------
     await expect(
-      closeAccountUseCase.execute(aliceUser.id, aliceAccount.id),
+      closeAccountHandler.execute(aliceUser.id, aliceAccount.id),
     ).rejects.toThrow(AccountHasBalanceError);
 
-    // -------------------------------------------------------------------------
     // 9. UC-06: Alice rút nốt 150k về 0đ
-    // -------------------------------------------------------------------------
     const finalWithdraw = await withdrawUseCase.execute({
       accountId: aliceAccount.id,
       userId: aliceUser.id,
       amount: '150000',
       description: 'Withdraw remaining balance before closing',
     });
-    expect(finalWithdraw.balanceAfter).toBe('0');
+    expect(finalWithdraw.transaction.balanceAfter).toBe('0');
 
-    // -------------------------------------------------------------------------
     // 10. UC-04: Alice đóng tài khoản thành công khi số dư = 0đ
-    // -------------------------------------------------------------------------
-    await closeAccountUseCase.execute(aliceUser.id, aliceAccount.id);
+    await closeAccountHandler.execute(aliceUser.id, aliceAccount.id);
 
-    const closedAccount = await getAccountUseCase.execute(aliceUser.id, aliceAccount.id);
+    const closedAccount = await getAccountQueryHandler.execute(aliceUser.id, aliceAccount.id);
     expect(closedAccount.status).toBe('CLOSED');
     expect(closedAccount.closedAt).not.toBeNull();
 
-    // -------------------------------------------------------------------------
     // 11. Hàng rào bảo mật: Không thể nạp tiền vào tài khoản đã đóng
-    // -------------------------------------------------------------------------
     await expect(
       depositUseCase.execute({
         accountId: aliceAccount.id,

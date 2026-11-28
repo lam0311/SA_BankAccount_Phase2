@@ -1,26 +1,26 @@
 import { Money } from '@src/common/domain/value-objects/money.value-object';
-import { OpenAccountUseCase } from '@src/modules/accounts/application/use-cases/open-account.use-case';
+import { OpenAccountHandler } from '@src/modules/accounts/application/commands/open-account.command';
 import {
-  fakeAccountRepository,
+  fakeAccountCommandRepository,
   makeAccount,
 } from '../../helpers/fake-account-repository';
 
-describe('OpenAccountUseCase', () => {
-  test('tạo account cho user hiện tại và giữ nguyên số tiền', async () => {
-    const repo = fakeAccountRepository();
-    repo.createWithOpeningDeposit.mockResolvedValue(
+describe('OpenAccountHandler (CQRS Command)', () => {
+  test('tạo account cho user hiện tại và giữ nguyên số tiền (việc phát sự kiện xóa cache do Command Repo + Outbox đảm nhận)', async () => {
+    const commandRepo = fakeAccountCommandRepository();
+    commandRepo.createWithOpeningDeposit.mockResolvedValue(
       makeAccount({
         currentBalance: Money.fromString('500000'),
       }),
     );
 
-    await new OpenAccountUseCase(repo).execute('user-A', {
+    await new OpenAccountHandler(commandRepo).execute('user-A', {
       accountName: '  Tài khoản chính  ',
       accountType: 'PAYMENT',
       initialDeposit: '500000',
     });
 
-    expect(repo.createWithOpeningDeposit).toHaveBeenCalledWith({
+    expect(commandRepo.createWithOpeningDeposit).toHaveBeenCalledWith({
       userId: 'user-A',
       accountName: 'Tài khoản chính',
       accountType: 'PAYMENT',
@@ -31,31 +31,31 @@ describe('OpenAccountUseCase', () => {
   test.each(['-1', '1.5', '', 'abc'])(
     'từ chối initialDeposit không hợp lệ: %s',
     async (initialDeposit) => {
-      const repo = fakeAccountRepository();
+      const commandRepo = fakeAccountCommandRepository();
 
       await expect(
-        new OpenAccountUseCase(repo).execute('user-A', {
+        new OpenAccountHandler(commandRepo).execute('user-A', {
           accountName: 'Tài khoản chính',
           accountType: 'PAYMENT',
           initialDeposit,
         }),
       ).rejects.toMatchObject({ httpStatus: 400 });
 
-      expect(repo.createWithOpeningDeposit).not.toHaveBeenCalled();
+      expect(commandRepo.createWithOpeningDeposit).not.toHaveBeenCalled();
     },
   );
 
   test('cho phép initialDeposit bằng 0', async () => {
-    const repo = fakeAccountRepository();
-    repo.createWithOpeningDeposit.mockResolvedValue(makeAccount());
+    const commandRepo = fakeAccountCommandRepository();
+    commandRepo.createWithOpeningDeposit.mockResolvedValue(makeAccount());
 
-    await new OpenAccountUseCase(repo).execute('user-A', {
+    await new OpenAccountHandler(commandRepo).execute('user-A', {
       accountName: 'Tài khoản chính',
       accountType: 'PAYMENT',
       initialDeposit: '0',
     });
 
-    expect(repo.createWithOpeningDeposit).toHaveBeenCalledWith(
+    expect(commandRepo.createWithOpeningDeposit).toHaveBeenCalledWith(
       expect.objectContaining({
         initialDeposit: Money.zero(),
       }),

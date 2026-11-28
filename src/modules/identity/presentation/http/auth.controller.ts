@@ -1,11 +1,11 @@
 import { successResponse, errorResponse } from '@src/common/http/swagger/response.schemas';
 import { userResponseSchema, loginResponseSchema } from './dto/auth-response.schema';
-// src/modules/identity/presentation/http/auth.controller.ts
 import { Body, Controller, HttpCode, HttpStatus, Post } from "@nestjs/common";
-import { ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
-import { Public, RateLimit } from "@src/common/security/decorators";
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
+import { CurrentUser, Public, RateLimit } from "@src/common/security/decorators";
+import type { AccessTokenPayload } from "@src/common/security/ports";
 import { RegisterDto } from "./dto/register.dto";
-import { LoginDto } from "./dto/login.dto";
+import { LoginDto, LogoutDto, RefreshTokenDto } from "./dto/login.dto";
 import { RegisterUserUseCase } from "../../application/use-cases/register-user.use-case";
 import { LoginUseCase } from "../../application/use-cases/login.use-case";
 
@@ -17,7 +17,7 @@ export class AuthController {
   constructor(
     private readonly registerUserUseCase: RegisterUserUseCase,
     private readonly loginUseCase: LoginUseCase,
-  ) {}
+  ) { }
 
   @ApiOperation({ summary: "Dang ky user moi" })
   @ApiResponse(successResponse(201, "Tao user thanh cong", userResponseSchema))
@@ -42,5 +42,22 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   login(@Body() dto: LoginDto) {
     return this.loginUseCase.execute(dto);
+  }
+
+  @ApiOperation({ summary: "Doi refresh token lay cap access token + refresh token moi" })
+  @RateLimit({ tier: "auth", capacity: 10, windowMs: 60_000 })
+  @Public()
+  @Post("refresh")
+  @HttpCode(HttpStatus.OK)
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.loginUseCase.refresh(dto.refreshToken);
+  }
+
+  @ApiOperation({ summary: "Dang xuat: thu hoi ngay JWT (jti) va refresh token" })
+  @ApiBearerAuth("access-token")
+  @Post("logout")
+  @HttpCode(HttpStatus.OK)
+  logout(@CurrentUser() user: AccessTokenPayload, @Body() dto?: LogoutDto) {
+    return this.loginUseCase.logout(user, dto?.refreshToken);
   }
 }

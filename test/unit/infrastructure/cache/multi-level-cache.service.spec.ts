@@ -3,10 +3,9 @@ import {
   CACHE_INVALIDATION_CHANNEL,
   MultiLevelCacheService,
 } from '@src/infrastructure/cache/multi-level-cache.service';
-import { CachedAccountRepository } from '@src/modules/accounts/infrastructure/persistence/cached-account.repository';
-import { Money } from '@src/common/domain/value-objects/money.value-object';
-import type { BankAccount } from '@src/modules/accounts/domain/entities/bank-account.entity';
-import type { PrismaAccountRepository } from '@src/modules/accounts/infrastructure/persistence/prisma-account.repository';
+import { CachedAccountQueryRepository } from '@src/modules/accounts/infrastructure/persistence/cached-account-query.repository';
+import type { AccountReadModel } from '@src/modules/accounts/application/queries/account.read-model';
+import type { PrismaAccountQueryRepository } from '@src/modules/accounts/infrastructure/persistence/prisma-account-query.repository';
 
 // Shared in-memory Redis store + Pub/Sub broker cho toàn bộ mock clients trong test
 const sharedStore = new Map<string, string>();
@@ -36,12 +35,20 @@ class MockRedis extends EventEmitter {
     return 'OK';
   }
 
+  duplicate(): MockRedis {
+    return new MockRedis();
+  }
+
   async del(...keys: string[]): Promise<number> {
     let deleted = 0;
     for (const k of keys) {
       if (sharedStore.delete(k)) deleted++;
     }
     return deleted;
+  }
+
+  async unlink(...keys: string[]): Promise<number> {
+    return this.del(...keys);
   }
 
   async scan(
@@ -153,39 +160,38 @@ describe('MultiLevelCacheService (TSK-17: Single-Flight & Multi-Node Pub/Sub)', 
       expect(sharedStore.has('accounts:id:acc-001')).toBe(true);
     });
 
-    it('CachedAccountRepository: 500 lệnh findById đồng thời chỉ gọi prismaRepo đúng 1 lần', async () => {
+    it('CachedAccountQueryRepository: 500 lệnh findById đồng thời chỉ gọi prismaQueryRepo đúng 1 lần', async () => {
       const cache = await createCacheNode();
-      const fakeAccount: BankAccount = {
+      const fakeReadModel: AccountReadModel = {
         id: '11111111-1111-4111-8111-111111111111',
         userId: '22222222-2222-4222-8222-222222222222',
         accountNumber: '100000000001',
         accountName: 'Main Payment',
         accountType: 'PAYMENT',
-        currentBalance: Money.fromString('2500000'),
+        currentBalance: '2500000',
         currency: 'VND',
         status: 'ACTIVE',
         closedAt: null,
-        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        createdAt: '2026-01-01T00:00:00.000Z',
       };
 
-      const prismaRepo = {
+      const prismaQueryRepo = {
         findById: jest.fn(async () => {
           await new Promise((resolve) => setTimeout(resolve, 20));
-          return fakeAccount;
+          return fakeReadModel;
         }),
-      } as unknown as PrismaAccountRepository;
+      } as unknown as PrismaAccountQueryRepository;
 
-      const repo = new CachedAccountRepository(prismaRepo, cache);
+      const repo = new CachedAccountQueryRepository(prismaQueryRepo, cache);
 
       const results = await Promise.all(
-        Array.from({ length: 500 }, () => repo.findById(fakeAccount.id)),
+        Array.from({ length: 500 }, () => repo.findById(fakeReadModel.id)),
       );
 
-      expect(prismaRepo.findById).toHaveBeenCalledTimes(1);
+      expect(prismaQueryRepo.findById).toHaveBeenCalledTimes(1);
       expect(results).toHaveLength(500);
-      expect(results[0]?.currentBalance).toBeInstanceOf(Money);
-      expect(results[0]?.currentBalance.toDecimalString()).toBe('2500000');
-      expect(results[499]?.currentBalance.toDecimalString()).toBe('2500000');
+      expect(results[0]?.currentBalance).toBe('2500000');
+      expect(results[499]?.currentBalance).toBe('2500000');
     });
 
     it('dọn sạch inFlight map khi DB lỗi để các request sau có thể thử lại bình thường', async () => {
@@ -348,7 +354,7 @@ describe('MultiLevelCacheService (TSK-17: Single-Flight & Multi-Node Pub/Sub)', 
       expect(cache.hasInL1('accounts:id:degraded')).toBe(true);
 
       // Đảm bảo channel constant được export đúng
-      expect(CACHE_INVALIDATION_CHANNEL).toBe('cache:invalidate');
+      expect(CACHE_INVALIDATION_CHANNEL).toBe('sa_bank:cache:l1:invalidate');
     });
   });
 });

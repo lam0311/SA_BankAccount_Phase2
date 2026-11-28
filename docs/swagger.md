@@ -14,7 +14,7 @@ Khi hệ thống khởi chạy ở chế độ phát triển (`NODE_ENV=developm
 
 ## 2. Kịch bản thử nghiệm hoàn chỉnh
 
-Bạn có thể thực hiện kiểm thử nhanh toàn bộ luồng nghiệp vụ trên trình duyệt theo 5 bước sau:
+Bạn có thể kiểm tra nhanh sức khỏe hạ tầng tại nhóm **Health** $\rightarrow$ `GET /api/v1/health` (không cần Authorize) để xem trạng thái của PostgreSQL, Redis, Piscina Worker Pool và Outbox lag, sau đó kiểm thử toàn bộ luồng nghiệp vụ theo 5 bước sau:
 
 ### Bước 1: Đăng ký tài khoản người dùng
 1. Mở nhóm **Identity** $\rightarrow$ chọn `POST /auth/register` $\rightarrow$ bấm **Try it out**.

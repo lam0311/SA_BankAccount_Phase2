@@ -1,60 +1,98 @@
 import { Money } from '../../../../common/domain/value-objects/money.value-object';
 import { ValidationError } from '../../../../common/domain/errors/common.errors';
-import { 
-  UnitOfWorkPort, 
-  TransactionEntryRecord 
+import {
+  UnitOfWorkPort,
+  TransactionExecutionResult,
 } from '../ports/unit-of-work.port';
-import { 
-  AccountNotFoundError, 
-  AccountClosedError 
+import type {
+  BalanceReservationPort,
+  WithdrawSettlementPort,
+} from '../ports/balance-reservation.port';
+import {
+  AccountNotFoundError,
+  AccountClosedError,
+  IdempotencyKeyReusedError,
 } from '../../domain/errors';
 
 export interface DepositMoneyCommand {
-  accountId: string;       
-  userId: string;          
-  amount: string;          
-  description?: string;    
+  accountId: string;
+  userId: string;
+  amount: string;
+  idempotencyKey?: string;
+  description?: string;
 }
 
 const MAX_VND = 999_999_999_999_999_999n;
 
 export class DepositMoneyUseCase {
-    constructor(
-        private readonly unitOfWork: UnitOfWorkPort,
-    ) {}
+  constructor(
+    private readonly unitOfWork: UnitOfWorkPort,
+    private readonly reservation?: BalanceReservationPort,
+    private readonly settlement?: WithdrawSettlementPort,
+  ) {}
 
-    async execute(command: DepositMoneyCommand): Promise<TransactionEntryRecord> {
-        return this.unitOfWork.execute(async (ctx) => {
-            const account = await ctx.accounts.lockForUpdate(command.accountId);
-            if (!account || account.userId !== command.userId) {
-                throw new AccountNotFoundError(); 
-            }
-            if (account.status === 'CLOSED') {
-                throw new AccountClosedError();
-            }
+  async execute(command: DepositMoneyCommand): Promise<TransactionExecutionResult> {
+    // xoa key tren redis va xa het lenh rut dang cho truoc khi nap tien vao db
+    await this.reservation?.invalidate(command.accountId);
+    await this.settlement?.flush();
 
-            const currentMoney = Money.fromString(account.currentBalance);
-            const depositMoney = Money.fromString(command.amount, { allowZero: false });
-            const newBalanceMoney = currentMoney.add(depositMoney);
-            if (BigInt(newBalanceMoney.toDecimalString()) > MAX_VND) {
-                throw new ValidationError([
-                    { field: 'amount', reason: 'amount_out_of_range' },
-                ]);
-            }
-            const newBalance = newBalanceMoney.toDecimalString();
-            
+    const result = await this.unitOfWork.execute(async (ctx) => {
+      const account = await ctx.accounts.lockForUpdate(command.accountId);
+      if (!account || account.userId !== command.userId) {
+        throw new AccountNotFoundError();
+      }
 
-            await ctx.accounts.updateBalance(account.id, newBalance);
-            const transactionRecord = await ctx.transactions.create({
-                accountId: account.id,
-                transactionType: 'CREDIT',     
-                referenceType: 'CASH_DEPOSIT', 
-                amount: command.amount,        
-                balanceAfter: newBalance,     
-                description: command.description ?? null, 
-            });
+      const depositMoney = Money.fromString(command.amount, { allowZero: false });
+      const description = command.description ?? null;
 
-            return transactionRecord;
-        })
+      if (command.idempotencyKey) {
+        const existingTx = await ctx.transactions.findByAccountAndIdempotencyKey(
+          command.accountId,
+          command.idempotencyKey,
+        );
+        if (existingTx) {
+          const samePayload =
+            existingTx.transactionType === 'CREDIT' &&
+            Money.fromString(String(existingTx.amount)).equals(depositMoney) &&
+            (existingTx.description ?? null) === description;
+
+          if (!samePayload) throw new IdempotencyKeyReusedError();
+          return { transaction: existingTx, isReplay: true };
+        }
+      }
+
+      if (account.status === 'CLOSED') {
+        throw new AccountClosedError();
+      }
+
+      const currentMoney = Money.fromString(account.currentBalance);
+      const newBalanceMoney = currentMoney.add(depositMoney);
+      if (BigInt(newBalanceMoney.toDecimalString()) > MAX_VND) {
+        throw new ValidationError([
+          { field: 'amount', reason: 'amount_out_of_range' },
+        ]);
+      }
+      const newBalance = newBalanceMoney.toDecimalString();
+
+      await ctx.accounts.updateBalance(account.id, newBalance);
+      const transaction = await ctx.transactions.create({
+        accountId: account.id,
+        transactionType: 'CREDIT',
+        referenceType: 'CASH_DEPOSIT',
+        amount: command.amount,
+        balanceAfter: newBalance,
+        description,
+        idempotencyKey: command.idempotencyKey ?? null,
+      });
+
+      return { transaction, isReplay: false };
+    });
+
+    // nap tien thanh cong thi xoa so du cu tren redis de lan rut sau lay so du moi
+    if (!result.isReplay) {
+      await this.reservation?.invalidate(command.accountId);
     }
+
+    return result;
+  }
 }

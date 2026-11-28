@@ -23,7 +23,7 @@ describe('JwtTokenService', () => {
       const token = await service.signAccessToken('user-uuid-123');
 
       expect(jwt.sign).toHaveBeenCalledWith(
-        { sub: 'user-uuid-123' },
+        { sub: 'user-uuid-123', jti: expect.any(String) },
         'super-secret-key-for-jwt-testing',
         {
           expiresIn: '60m',
@@ -45,6 +45,19 @@ describe('JwtTokenService', () => {
         'super-secret-key-for-jwt-testing',
       );
       expect(payload).toEqual({ sub: 'user-uuid-123' });
+    });
+
+    it('ném UnauthorizedError khi jti đã nằm trong blacklist thu hồi', async () => {
+      const mockSession = {
+        isAccessTokenRevoked: jest.fn().mockResolvedValue(true),
+      };
+      const serviceWithSession = new JwtTokenService(mockConfig as any, mockSession as any);
+      (jwt.verify as jest.Mock).mockReturnValue({ sub: 'user-uuid-123', jti: 'revoked-jti-1' });
+
+      await expect(serviceWithSession.verifyAccessToken('revoked.jwt.token')).rejects.toThrow(
+        UnauthorizedError,
+      );
+      expect(mockSession.isAccessTokenRevoked).toHaveBeenCalledWith('revoked-jti-1');
     });
 
     it('ném UnauthorizedError khi jwt.verify ném lỗi (token sai chữ ký hoặc hết hạn)', async () => {

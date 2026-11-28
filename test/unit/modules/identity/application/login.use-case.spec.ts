@@ -3,7 +3,12 @@ import { UserRepositoryPort } from '@src/modules/identity/application/ports/user
 import { PasswordHasherPort } from '@src/modules/identity/application/ports/password-hasher.port';
 import { TokenServicePort } from '@src/common/security/ports/token-service.port';
 import { User } from '@src/modules/identity/domain/entities/user.entity';
-import { InvalidCredentialsError } from '@src/modules/identity/domain/errors/identity.errors';
+import {
+  AccountLockedError,
+  InvalidCredentialsError,
+} from '@src/modules/identity/domain/errors/identity.errors';
+import { UnauthorizedError } from '@src/common/domain/errors';
+import { RedisAuthSessionService } from '@src/modules/identity/infrastructure/security/redis-auth-session.service';
 
 describe('LoginUseCase', () => {
   let useCase: LoginUseCase;
@@ -127,5 +132,67 @@ describe('LoginUseCase', () => {
     expect(error2).toBeInstanceOf(InvalidCredentialsError);
     expect(error1?.errorCode).toBe(error2?.errorCode);
     expect(error1?.httpStatus).toBe(error2?.httpStatus);
+  });
+
+  describe('TSK-20: Refresh Rotation, Reuse Detection, Logout & Email Lockout', () => {
+    let authSession: RedisAuthSessionService;
+    let securedUseCase: LoginUseCase;
+
+    beforeEach(() => {
+      authSession = new RedisAuthSessionService();
+      securedUseCase = new LoginUseCase(
+        mockUserRepo,
+        mockPasswordHasher,
+        mockTokenService,
+        authSession,
+      );
+    });
+
+    it('khóa email (429 AccountLockedError) sau 5 lần sai mật khẩu liên tiếp', async () => {
+      mockUserRepo.findByEmail.mockResolvedValue(null);
+      mockPasswordHasher.compare.mockResolvedValue(false);
+
+      for (let i = 0; i < 5; i++) {
+        await expect(
+          securedUseCase.execute({ email: 'victim@bank.com', password: 'wrong' }),
+        ).rejects.toThrow(InvalidCredentialsError);
+      }
+
+      mockPasswordHasher.compare.mockClear();
+      await expect(
+        securedUseCase.execute({ email: 'victim@bank.com', password: 'wrong' }),
+      ).rejects.toThrow(AccountLockedError);
+      expect(mockPasswordHasher.compare).not.toHaveBeenCalled();
+    });
+
+    it('xoay vòng Refresh Token (RT1 -> RT2) và hủy cả phiên khi dùng lại RT1 cũ (Reuse Detection)', async () => {
+      const user = new User('user-1', 'u@bank.com', 'User 1', 'hash', new Date(), new Date());
+      mockUserRepo.findByEmail.mockResolvedValue(user);
+      mockPasswordHasher.compare.mockResolvedValue(true);
+      mockTokenService.signAccessToken.mockResolvedValue('access-1');
+
+      const loginRes = await securedUseCase.execute({ email: 'u@bank.com', password: 'ok' });
+      expect(loginRes.refreshToken).toBeDefined();
+
+      mockTokenService.signAccessToken.mockResolvedValue('access-2');
+      const rotated = await securedUseCase.refresh(loginRes.refreshToken!);
+      expect(rotated.accessToken).toBe('access-2');
+      expect(rotated.refreshToken).not.toBe(loginRes.refreshToken);
+
+      // Dùng lại RT1 cũ -> 401 và xóa luôn cả family (RT2 cũng bị 401 theo)
+      await expect(securedUseCase.refresh(loginRes.refreshToken!)).rejects.toThrow(UnauthorizedError);
+      await expect(securedUseCase.refresh(rotated.refreshToken)).rejects.toThrow(UnauthorizedError);
+    });
+
+    it('logout thu hồi ngay jti của Access Token và hủy luôn Refresh Token', async () => {
+      const rt = await authSession.issueRefreshToken('user-1');
+      await securedUseCase.logout(
+        { sub: 'user-1', jti: 'jti-123', exp: Math.floor(Date.now() / 1000) + 600 },
+        rt,
+      );
+
+      await expect(authSession.isAccessTokenRevoked('jti-123')).resolves.toBe(true);
+      await expect(securedUseCase.refresh(rt)).rejects.toThrow(UnauthorizedError);
+    });
   });
 });
